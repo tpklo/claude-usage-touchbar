@@ -54,18 +54,19 @@ See [SECURITY.md](SECURITY.md) for exactly where the token goes.
 - macOS 12+ — developed and tested on macOS 26.4
 - Xcode Command Line Tools: `xcode-select --install`
 - Claude Code, signed in (`claude` in a terminal)
-- Python 3 with Pillow, and Node, for the asset step: `pip3 install --user Pillow`
-- Optional: `ffmpeg`, for one of the two animations
-- Claude Desktop installed — the artwork is read from it
+- Node, **for the build only**: `brew install node`. It runs the pose data
+  through its own engine once, at `make assets` time. Neither the widget nor
+  the usage script uses it afterwards — those need nothing beyond what the
+  Command Line Tools already installed.
 
 ## Install
 
 ```bash
-git clone https://github.com/<you>/claude-usage-touchbar
+git clone https://github.com/tpklo/claude-usage-touchbar
 cd claude-usage-touchbar
 
 make install-script    # puts the usage reader in ~/bin
-make assets            # pulls the artwork onto this machine
+make assets            # fetches Clawd's poses onto this machine
 make run
 ```
 
@@ -82,15 +83,14 @@ Check the script works on its own first:
 If it says `token expired`, run `claude -p hi` once — the CLI refreshes the
 token for you. No re-login, no prompt.
 
-### Why the artwork is not in this repository
+### Why the poses are not in this repository
 
 Clawd is Anthropic's mascot; the name and the character are theirs. The pose
 library at [claudepix.vercel.app](https://claudepix.vercel.app) publishes no
 licence, which means all rights reserved.
 
-So none of it is redistributed here. `make assets` reads the animation frames
-out of the copy of Claude Desktop already on your machine and fetches the pose
-grids from claudepix at build time — your machine, your copy, your use. This
+So none of it is redistributed here. `make assets` fetches the pose grids at
+build time and writes them to `clawd_presets.h` on your machine. This
 repository contains only code.
 
 ## Run it at login

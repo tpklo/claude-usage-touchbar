@@ -22,20 +22,22 @@ install-script:
 	@install -m 755 claude-touchbar.sh $(HOME)/bin/claude-touchbar.sh
 	@echo "installed $(HOME)/bin/claude-touchbar.sh"
 
-# Clawd's artwork is not redistributed — pull it onto this machine first.
+# Clawd's pose data is not redistributed — pull it onto this machine first.
 assets:
 	python3 tools/extract-assets.py
 
 # A real bundle is required, not a bare binary: TouchBarServer keys Control Strip
 # items off the caller's bundle identity, and a bare binary reports (null) — the
 # item silently never appears.
-$(BIN): main.m Info.plist $(wildcard frames/*.png)
-	@test -f clawd_presets.h || $(MAKE) --no-print-directory missing-assets
-	mkdir -p $(BUNDLE)/Contents/MacOS $(BUNDLE)/Contents/Resources
+$(BIN): main.m clawd_presets.h Info.plist
+	mkdir -p $(BUNDLE)/Contents/MacOS
 	cp Info.plist $(BUNDLE)/Contents/Info.plist
 	clang $(FLAGS) -o $@ main.m
-	rsync -a --delete frames/ $(BUNDLE)/Contents/Resources/frames/
 	codesign --force --sign - $(BUNDLE)
+
+# Not a rule that builds it — just a readable failure when it is absent.
+clawd_presets.h:
+	@$(MAKE) --no-print-directory missing-assets
 
 # Kept as its own target so the message lives outside a shell one-liner —
 # an apostrophe in "Anthropic's" broke the previous inline version.
