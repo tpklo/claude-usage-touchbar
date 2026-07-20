@@ -17,7 +17,13 @@ set -uo pipefail
 
 CACHE=/tmp/.claude-usage-$UID          # "5h 7d resetMin scopedPct scopedName epoch"
 TTL=60
-NODE=/Users/tongkunlong/.nvm/versions/node/v22.22.3/bin/node
+
+# /usr/bin/python3 ships with the Command Line Tools, which this project already
+# requires to build — so there is no runtime dependency to install. An earlier
+# version pointed at a hard-coded nvm path, which worked on exactly one machine.
+PY=/usr/bin/python3
+[ -x "$PY" ] || PY=$(command -v python3) || {
+  echo "0 0 -1 -1 none"; exit 0; }
 
 read_cache() {                          # -> P5 P7 RESET SP SN STAMP
   [ -f "$CACHE" ] || return 1
@@ -35,12 +41,16 @@ if [ "${STAMP:-0}" -eq 0 ] || [ "$AGE" -ge "$TTL" ]; then
 
   # Check expiry locally first: it tells us *why* we failed instead of guessing
   # from an HTTP code, and saves a round trip on a token that cannot work.
-  expired=$(printf '%s' "$cred" | "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).claudeAiOauth.expiresAt<Date.now()?"1":"0")}catch{process.stdout.write("1")}})')
+  expired=$(printf '%s' "$cred" | "$PY" -c 'import json,sys,time
+try: print("1" if json.load(sys.stdin)["claudeAiOauth"]["expiresAt"] < time.time()*1000 else "0")
+except Exception: print("1")')
 
   if [ "$expired" = "1" ]; then
     state=expired
   else
-    tok=$(printf '%s' "$cred" | "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).claudeAiOauth.accessToken)}catch{}})')
+    tok=$(printf '%s' "$cred" | "$PY" -c 'import json,sys
+try: sys.stdout.write(json.load(sys.stdin)["claudeAiOauth"]["accessToken"])
+except Exception: pass')
     unset cred
 
     # -w '%{http_code}' so a 401 is never silently parsed as "no data".
@@ -57,7 +67,40 @@ if [ "${STAMP:-0}" -eq 0 ] || [ "$AGE" -ge "$TTL" ]; then
       # limits[].percent confirms it. A previous version guessed the scale with
       # `v > 1 ? v : v*100`, which turned a real 1% into 100%. Never infer a
       # scale — read the field as the payload actually reports it.
-      parsed=$(printf '%s' "$resp" | sed '$d' | "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let j;try{j=JSON.parse(s)}catch{return};const pct=w=>(w&&typeof w.utilization==="number")?Math.round(w.utilization):-1;let p5=pct(j.five_hour),p7=pct(j.seven_day);let sp=-1,sn="-";for(const l of (j.limits||[])){if(typeof l.percent!=="number")continue;if(l.kind==="session")p5=Math.round(l.percent);else if(l.kind==="weekly_all")p7=Math.round(l.percent);else if(l.kind==="weekly_scoped"){sp=Math.round(l.percent);const nm=l.scope&&l.scope.model&&l.scope.model.display_name;if(nm)sn=nm.replace(/\s+/g,"")}}const t=j.five_hour&&j.five_hour.resets_at;const m=t?Math.max(0,Math.round((new Date(t)-new Date())/60000)):-1;process.stdout.write(`${p5} ${p7} ${m} ${sp} ${sn}`)})')
+      parsed=$(printf '%s' "$resp" | sed '$d' | "$PY" -c '
+import json, sys, re, datetime
+try: j = json.load(sys.stdin)
+except Exception: sys.exit(0)
+
+def pct(w):
+    v = (w or {}).get("utilization")
+    return round(v) if isinstance(v, (int, float)) else -1
+
+p5, p7, sp, sn = pct(j.get("five_hour")), pct(j.get("seven_day")), -1, "-"
+
+for l in j.get("limits") or []:
+    v = l.get("percent")
+    if not isinstance(v, (int, float)):
+        continue
+    k = l.get("kind")
+    if k == "session":       p5 = round(v)
+    elif k == "weekly_all":  p7 = round(v)
+    elif k == "weekly_scoped":
+        sp = round(v)
+        nm = ((l.get("scope") or {}).get("model") or {}).get("display_name")
+        if nm: sn = re.sub(r"\s+", "", nm)
+
+m = -1
+t = (j.get("five_hour") or {}).get("resets_at")
+if t:
+    try:
+        # fromisoformat only learned to accept a trailing Z in 3.11.
+        d = datetime.datetime.fromisoformat(t.replace("Z", "+00:00"))
+        m = max(0, round((d - datetime.datetime.now(d.tzinfo)).total_seconds() / 60))
+    except Exception:
+        pass
+
+print(f"{p5} {p7} {m} {sp} {sn}")')
       case "$parsed" in
         ''|-1\ -1\ *) state=stale ;;
         *) printf '%s %s\n' "$parsed" "$(date +%s)" > "$CACHE"; chmod 600 "$CACHE"
