@@ -1,0 +1,541 @@
+// claude-touchbar — a Claude mascot that paces the Touch Bar and reacts to how
+// much of your usage window you have burned.
+//
+// The app holds no credentials and opens no sockets: it shells out to
+// ~/bin/claude-touchbar.sh --raw and draws the three numbers it prints. That
+// script is the only thing that touches the keychain, via /usr/bin/security,
+// which is already on the item's ACL — so nothing ever prompts.
+//
+// Build & run:  make run
+//
+// Why private API: a Control Strip tray item is a fixed narrow slot with no
+// width control of any kind (checked the public headers and every private
+// method on NSTouchBarItem — none exist). A wide surface is only reachable via
+// +[NSTouchBar presentSystemModalTouchBar:placement:systemTrayItemIdentifier:].
+// placement 0 shares the bar with the Control Strip; placement 1 covers it.
+
+#import <Cocoa/Cocoa.h>
+#import "clawd_presets.h"
+#import <string.h>
+
+extern void DFRSystemModalShowsCloseBoxWhenFrontMost(BOOL show);
+
+@interface NSTouchBar (PrivateSPI)
++ (void)presentSystemModalTouchBar:(NSTouchBar *)bar
+                         placement:(long long)placement
+          systemTrayItemIdentifier:(NSTouchBarItemIdentifier)ident;
++ (void)dismissSystemModalTouchBar:(NSTouchBar *)bar;
+@end
+
+static NSTouchBarItemIdentifier const kSceneID = @"local.claude-touchbar.scene";
+static NSTouchBarItemIdentifier const kEscID   = @"local.claude-touchbar.esc";
+static NSString *const kScript = @"~/bin/claude-touchbar.sh --raw";
+
+static CGFloat const kSceneW = 560.0;   // fits the app region alongside the Control Strip
+static CGFloat const kSceneH = 30.0;
+static double  const kFPS    = 15.0;    // both reference pet apps land at 14-18
+
+#pragma mark - Mood
+
+// Mood is a pure function of the 5h burn: the pet's behaviour IS the gauge.
+typedef NS_ENUM(NSInteger, Mood) { MoodCalm, MoodBrisk, MoodTired, MoodPanic };
+
+static Mood MoodForUsage(int p5) {
+    if (p5 >= 85) return MoodPanic;
+    if (p5 >= 60) return MoodTired;
+    if (p5 >= 30) return MoodBrisk;
+    return MoodCalm;
+}
+
+static CGFloat SpeedForMood(Mood m) {
+    switch (m) {
+        case MoodCalm:  return 34.0;    // points per second
+        case MoodBrisk: return 62.0;
+        case MoodTired: return 20.0;    // worn out, slows down
+        case MoodPanic: return 96.0;    // running around
+    }
+}
+
+#pragma mark - Scene
+
+// Clawd either paces (drawn from the sprite sheet below) or stops to perform a
+// canned animation lifted straight out of Claude.app's own assets.
+typedef NS_ENUM(NSInteger, Act) { ActWalk, ActClip, ActJuggle };
+
+// Which official clip suits each mood. Indices follow kClawdClips order:
+// 0 breathe 1 blink 2 look_around 3 wink 4 surprise 5 sleep 6 bounce 7 sway 8 think
+static int ClipForMood(Mood m) {
+    switch (m) {
+        case MoodCalm:  { int c[] = {0,1,2};   return c[arc4random_uniform(3)]; }
+        case MoodBrisk: { int c[] = {6,7,3};   return c[arc4random_uniform(3)]; }
+        case MoodTired: { int c[] = {8,5};     return c[arc4random_uniform(2)]; }
+        case MoodPanic: return 4;   // surprise
+    }
+}
+
+@interface PetView : NSView
+@property (nonatomic) int p5, p7, resetMin, ageSec, scopedPct;
+@property (nonatomic, copy) NSString *scopedName;   // per-model weekly cap (e.g. Fable)
+@property (nonatomic, copy) NSString *state;   // ok | stale | expired | none
+@property (nonatomic) CGFloat x, dir, phase;
+@property (nonatomic) BOOL haveData;
+@property (nonatomic) Act act;
+@property (nonatomic) NSInteger clip;           // frame index within the clip
+@property (nonatomic) NSInteger clipIdx;        // which clip in kClawdClips
+@property (nonatomic) NSTimeInterval clipT, sinceAct;
+@property (nonatomic) CGFloat ballY, ballV;   // juggled ball: height above his head, velocity
+@end
+
+@implementation PetView
+
+- (instancetype)initWithFrame:(NSRect)f {
+    if ((self = [super initWithFrame:f])) {
+        _x = 40; _dir = 1; _p5 = 0; _p7 = 0; _resetMin = -1;
+        _act = ActWalk;
+    }
+    return self;
+}
+
+- (BOOL)isFlipped { return NO; }
+
+- (void)advance:(NSTimeInterval)dt {
+    Mood m = MoodForUsage(self.p5);
+
+    if (self.act == ActWalk) {
+        self.x += self.dir * SpeedForMood(m) * dt;
+
+        CGFloat pad = 30, right = NSWidth(self.bounds) - 210;  // clear of the readout
+        if (self.x > right) { self.x = right; self.dir = -1; }
+        if (self.x < pad)   { self.x = pad;   self.dir =  1; }
+
+        // Step cadence tracks speed, so fast moods visibly scurry.
+        self.phase += dt * (SpeedForMood(m) / 9.0);
+
+        // Every so often, stop and do something. Panicking Clawd has no time
+        // for hobbies, so the pause only happens when things are calm.
+        self.sinceAct += dt;
+        if (self.sinceAct > 12.0 && m != MoodPanic) {
+            self.sinceAct = 0;
+            self.clip = 0;
+            self.clipT = 0;
+            if (arc4random_uniform(4) == 0) {          // 1 ใน 4 = เดาะบอล
+                self.act = ActJuggle; self.ballY = 0; self.ballV = 46;
+            } else {
+                self.act = ActClip;
+                self.clipIdx = ClipForMood(m);
+            }
+        }
+    } else if (self.act == ActJuggle) {
+        // Simple ballistics: the ball falls, Clawd bumps it back up on contact.
+        // ponytail: no collision system, just a floor test — it is one ball.
+        self.clipT += dt;
+        self.ballV -= 150.0 * dt;                 // gravity, points/s^2
+        self.ballY += self.ballV * dt;
+        if (self.ballY <= 0 && self.ballV < 0) {  // bounced off his head
+            self.ballY = 0;
+            self.ballV = 46;
+            self.clip++;                          // count the bumps
+        }
+        self.phase += dt * 4.0;                   // little bob while juggling
+        if (self.clipT > 6.0) { self.act = ActWalk; self.sinceAct = 0; }
+    } else {
+        // Each source frame carries its own hold in ms — honour it rather than
+        // forcing a constant fps, or the timing of blinks and beats is wrong.
+        const ClawdClip *cl = &kClawdClips[self.clipIdx];
+        self.clipT += dt * 1000.0;
+        while (self.clip < cl->count && self.clipT >= cl->frames[self.clip].hold) {
+            self.clipT -= cl->frames[self.clip].hold;
+            self.clip++;
+        }
+        if (self.clip >= cl->count) { self.act = ActWalk; self.clip = 0; self.sinceAct = 0; }
+    }
+
+    self.needsDisplay = YES;
+}
+
+#pragma mark - Sprite
+
+
+// Walk cycle: the official art has no walking pose, so build one from the base
+// grid by moving the four legs. Row 14-16 hold the legs at columns 5, 8, 12, 15.
+// ponytail: mutate a copy of the base rather than storing extra 400-byte frames.
+static const unsigned char *WalkFrame(const unsigned char *base, int step) {
+    static unsigned char buf[CLAWD_N * CLAWD_N];
+    memcpy(buf, base, sizeof(buf));
+
+    // Clear the existing legs, then redraw them at the offsets for this step.
+    for (int r = 14; r <= 16; r++)
+        for (int c = 0; c < CLAWD_N; c++)
+            if (buf[r * CLAWD_N + c] == 1) buf[r * CLAWD_N + c] = 0;
+
+    // Two pairs in counter-phase — front pair forward while back pair trails.
+    static const int kLegX[4] = {5, 8, 12, 15};
+    // Four genuinely distinct poses. Legs 0,2 lead while 1,3 trail (diagonal
+    // gait) — a leg swings forward only while it is lifted, and plants when down.
+    static const int kSwing[4][4] = {   // horizontal offset per step, per leg
+        { -1, +1, -1, +1},
+        {  0,  0,  0,  0},
+        { +1, -1, +1, -1},
+        {  0,  0,  0,  0},
+    };
+    static const int kLift[4][4]  = {   // 1 = lifted (drawn one row shorter)
+        { 0, 1, 0, 1},
+        { 0, 0, 0, 0},
+        { 1, 0, 1, 0},
+        { 0, 0, 0, 0},
+    };
+
+    int ph = step & 3;
+    for (int i = 0; i < 4; i++) {
+        int c = kLegX[i] + kSwing[ph][i];
+        if (c < 0 || c >= CLAWD_N) continue;
+        int bottom = kLift[ph][i] ? 15 : 16;         // lifted legs stop short
+        for (int r = 14; r <= bottom; r++) buf[r * CLAWD_N + c] = 1;
+    }
+    return buf;
+}
+
+// Draw one 20x20 official frame. Rows run top-down; the view is not flipped.
+// The base pose only occupies rows 4..16 — the rest of the 20x20 canvas is
+// padding. Skipping it lets each pixel be ~60% larger in the same 30pt bar.
+#define CLAWD_TOP 3
+#define CLAWD_BOT 17
+#define CLAWD_ROWS (CLAWD_BOT - CLAWD_TOP + 1)
+
+static void DrawGrid(const unsigned char *g, NSPoint origin, CGFloat px,
+                     BOOL flip, NSColor *body) {
+    NSColor *eye = [NSColor colorWithSRGBRed:0.06 green:0.06 blue:0.06 alpha:1.0];
+    for (int r = CLAWD_TOP; r <= CLAWD_BOT; r++) {
+        for (int c = 0; c < CLAWD_N; c++) {
+            unsigned char v = g[r * CLAWD_N + c];
+            if (!v) continue;
+            [(v == 2 ? eye : body) set];
+            int cx = flip ? (CLAWD_N - 1 - c) : c;
+            NSRectFill(NSMakeRect(origin.x + (cx - CLAWD_N / 2.0) * px,
+                                  origin.y + (CLAWD_BOT - r) * px,
+                                  px + 0.4, px + 0.4));
+        }
+    }
+}
+
+- (void)drawRect:(NSRect)dirty {
+    [NSColor.clearColor set];
+    NSRectFill(dirty);
+
+    CGFloat midY = NSHeight(self.bounds) / 2.0;
+
+    if (!self.haveData) {
+        NSDictionary *at = @{ NSFontAttributeName: [NSFont systemFontOfSize:12],
+                              NSForegroundColorAttributeName: NSColor.secondaryLabelColor };
+        [@"claude …" drawAtPoint:NSMakePoint(20, midY - 8) withAttributes:at];
+        return;
+    }
+
+    Mood mood = MoodForUsage(self.p5);
+
+    // Anthropic coral, desaturating toward alarm red as the window fills.
+    NSColor *body = (mood == MoodPanic)
+        ? [NSColor colorWithSRGBRed:0.86 green:0.30 blue:0.22 alpha:1.0]
+        : [NSColor colorWithSRGBRed:0.804 green:0.498 blue:0.416 alpha:1.0];  // #CD7F6A — official, from creature-engine.js
+
+    CGFloat const px = 1.95;                      // 15 drawn rows * 1.95 = 29pt of the 30pt bar
+    CGFloat bob = (mood == MoodTired) ? 0 : (((int)(self.phase * 2.0) & 1) ? 0.9 : 0);
+    NSPoint feet = NSMakePoint(self.x, midY - (CLAWD_ROWS * px) / 2.0 + bob);
+
+    // Ground line, like the reference art.
+    [[NSColor colorWithWhite:1.0 alpha:0.14] set];
+    NSRectFill(NSMakeRect(0, feet.y - 1.5, NSWidth(self.bounds), 1.0));
+
+    // Panic: motion streaks trailing behind.
+    if (mood == MoodPanic) {
+        [[body colorWithAlphaComponent:0.28] set];
+        for (int i = 1; i <= 3; i++) {
+            CGFloat sx = self.x - self.dir * (CLAWD_N * px * 0.4 + i * 5.0);
+            NSRectFill(NSMakeRect(MIN(sx, sx - self.dir * 4.0), feet.y + 8, 4.0, 1.6));
+        }
+    }
+
+    const unsigned char *base = kClawdClips[0].frames[0].grid;   // canonical pose
+    if (self.act == ActWalk) {
+        DrawGrid(WalkFrame(base, (int)(self.phase * 2.0)), feet, px, (self.dir < 0), body);
+    } else if (self.act == ActJuggle) {
+        DrawGrid(base, feet, px, (self.dir < 0), body);
+        // The ball, sitting above his head.
+        CGFloat top = feet.y + CLAWD_ROWS * px;
+        NSRect b = NSMakeRect(self.x - px, top + 1 + self.ballY, px * 2, px * 2);
+        [NSColor.whiteColor set];
+        NSRectFill(b);
+    } else {
+        const ClawdClip *cl = &kClawdClips[self.clipIdx];
+        NSInteger i = MIN(MAX(self.clip, 0), (NSInteger)cl->count - 1);
+        DrawGrid(cl->frames[i].grid, feet, px, (self.dir < 0), body);
+    }
+
+    // Tired: a sweat drop above the head.
+    if (mood == MoodTired) {
+        [[NSColor colorWithSRGBRed:0.42 green:0.70 blue:0.94 alpha:0.95] set];
+        NSRectFill(NSMakeRect(self.x + 8, feet.y + CLAWD_ROWS * px * 0.9, 2.4, 3.4));
+    }
+
+    // Readout. The 5h window throttles you now, so it leads on size and weight;
+    // 7d is context but still legible (it was too faint to read before). Every
+    // number carries a unit or label — no bare figures to decode.
+    CGFloat rx = NSWidth(self.bounds) - 196;
+    CGFloat h  = NSHeight(self.bounds);
+
+    int p5 = MAX(0, MIN(100, self.p5)), p7 = MAX(0, MIN(100, self.p7));
+    NSColor *(^tone)(int) = ^(int pct){
+        return (pct >= 90) ? [NSColor colorWithSRGBRed:1.00 green:0.42 blue:0.33 alpha:1.0]
+             : (pct >= 70) ? [NSColor colorWithSRGBRed:1.00 green:0.78 blue:0.31 alpha:1.0]
+                           : [NSColor colorWithSRGBRed:0.48 green:0.86 blue:0.56 alpha:1.0];
+    };
+    NSColor *track = [NSColor colorWithWhite:1.0 alpha:0.18];
+    BOOL dead = [self.state isEqualToString:@"expired"];
+    BOOL old  = [self.state isEqualToString:@"stale"];
+
+    // Stale or dead data must never look like a live reading.
+    CGFloat dim = dead ? 0.30 : (old ? 0.55 : 1.0);
+
+    // ── row 1: 5h ──────────────────────────────────────────────
+    NSDictionary *k5 = @{ NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightBold],
+                          NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.75 * dim] };
+    [@"5h" drawAtPoint:NSMakePoint(rx, h - 15) withAttributes:k5];
+
+    [[track colorWithAlphaComponent:0.18 * dim] set];
+    NSRectFill(NSMakeRect(rx + 21, h - 13, 84, 8));
+    [[tone(p5) colorWithAlphaComponent:dim] set];
+    NSRectFill(NSMakeRect(rx + 21, h - 13, 84 * p5 / 100.0, 8));
+    // Tick marks at 50 and 90 — turns a bare bar into a scale you can read.
+    [[NSColor colorWithWhite:0 alpha:0.45 * dim] set];
+    NSRectFill(NSMakeRect(rx + 21 + 84 * 0.50, h - 13, 1, 8));
+    NSRectFill(NSMakeRect(rx + 21 + 84 * 0.90, h - 13, 1, 8));
+
+    NSDictionary *n5 = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:14
+                                                                                weight:NSFontWeightBold],
+                          NSForegroundColorAttributeName: [tone(p5) colorWithAlphaComponent:dim] };
+    [[NSString stringWithFormat:@"%d%%", p5] drawAtPoint:NSMakePoint(rx + 111, h - 17) withAttributes:n5];
+
+    // reset countdown — back, and now it has room at a legible 10pt
+    if (self.resetMin >= 0 && !dead) {
+        NSDictionary *rs = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:10
+                                                                                    weight:NSFontWeightMedium],
+                              NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.55 * dim] };
+        [[NSString stringWithFormat:@"%dh%02d", self.resetMin / 60, self.resetMin % 60]
+            drawAtPoint:NSMakePoint(rx + 152, h - 14) withAttributes:rs];
+    }
+
+    // ── row 2: 7d ──────────────────────────────────────────────
+    NSDictionary *k7 = @{ NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightBold],
+                          NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.62 * dim] };
+    [@"7d" drawAtPoint:NSMakePoint(rx, 2) withAttributes:k7];
+
+    [[track colorWithAlphaComponent:0.18 * dim] set];
+    NSRectFill(NSMakeRect(rx + 21, 4, 84, 7));
+    [[tone(p7) colorWithAlphaComponent:dim] set];
+    NSRectFill(NSMakeRect(rx + 21, 4, 84 * p7 / 100.0, 7));
+    [[NSColor colorWithWhite:0 alpha:0.45 * dim] set];
+    NSRectFill(NSMakeRect(rx + 21 + 84 * 0.50, 4, 1, 7));
+    NSRectFill(NSMakeRect(rx + 21 + 84 * 0.90, 4, 1, 7));
+
+    NSDictionary *n7 = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:13
+                                                                                weight:NSFontWeightBold],
+                          NSForegroundColorAttributeName: [tone(p7) colorWithAlphaComponent:dim] };
+    [[NSString stringWithFormat:@"%d%%", p7] drawAtPoint:NSMakePoint(rx + 111, 0) withAttributes:n7];
+
+    // Per-model cap rides on the 7d row: same window, narrower scope.
+    if (self.scopedPct > 0 && self.scopedName.length) {
+        NSColor *sc = [tone(self.scopedPct) colorWithAlphaComponent:0.95 * dim];
+        NSDictionary *sl = @{ NSFontAttributeName: [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold],
+                              NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.5 * dim] };
+        NSDictionary *sv = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:10
+                                                                                    weight:NSFontWeightBold],
+                              NSForegroundColorAttributeName: sc };
+        [self.scopedName drawAtPoint:NSMakePoint(rx + 152, 10) withAttributes:sl];
+        [[NSString stringWithFormat:@"%d%%", self.scopedPct]
+            drawAtPoint:NSMakePoint(rx + 152, 0) withAttributes:sv];
+    }
+
+    // ── status ─────────────────────────────────────────────────
+    // Colour alone is not enough: name the problem in words.
+    NSString *badge = dead ? @"token expired" : (old ? [NSString stringWithFormat:@"%dm ago", self.ageSec / 60] : nil);
+    if (badge) {
+        NSDictionary *bs = @{ NSFontAttributeName: [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold],
+                              NSForegroundColorAttributeName: dead
+                                  ? [NSColor colorWithSRGBRed:1.0 green:0.45 blue:0.35 alpha:1.0]
+                                  : [NSColor colorWithWhite:1.0 alpha:0.5] };
+        [badge drawAtPoint:NSMakePoint(rx + 152, 2) withAttributes:bs];
+    } else if (MAX(p5, p7) >= 90) {
+        NSDictionary *w = @{ NSFontAttributeName: [NSFont systemFontOfSize:12 weight:NSFontWeightHeavy],
+                             NSForegroundColorAttributeName: tone(MAX(p5, p7)) };
+        [@"!" drawAtPoint:NSMakePoint(rx + 152, (p5 >= p7) ? h - 16 : 1) withAttributes:w];
+    }
+}
+
+@end
+
+#pragma mark - App
+
+@interface AppDelegate : NSObject <NSApplicationDelegate, NSTouchBarDelegate>
+@property (nonatomic, strong) NSTouchBar *bar;
+@property (nonatomic, strong) PetView *pet;
+@property (nonatomic, strong) NSTimer *frameTimer;
+@property (nonatomic, strong) dispatch_queue_t shell;
+@property (nonatomic, strong) id activity;
+@property (nonatomic) NSTimeInterval lastFrame;
+@property (nonatomic) NSTimeInterval lastPoll;
+@property (nonatomic) BOOL polling, asleep;
+@end
+
+@implementation AppDelegate
+
+- (void)applicationDidFinishLaunching:(NSNotification *)note {
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    self.shell = dispatch_queue_create("local.claude-touchbar.shell", DISPATCH_QUEUE_SERIAL);
+
+    if (![NSTouchBar respondsToSelector:@selector(presentSystemModalTouchBar:placement:systemTrayItemIdentifier:)]) {
+        NSLog(@"claude-touchbar: system-modal Touch Bar SPI missing — exiting.");
+        [NSApp terminate:nil];
+        return;
+    }
+
+    DFRSystemModalShowsCloseBoxWhenFrontMost(NO);
+
+    self.pet = [[PetView alloc] initWithFrame:NSMakeRect(0, 0, kSceneW, kSceneH)];
+
+    self.bar = [NSTouchBar new];
+    self.bar.delegate = self;
+    self.bar.defaultItemIdentifiers = @[kSceneID];
+    // Keep Esc working — a presented bar otherwise covers the system one.
+    self.bar.escapeKeyReplacementItemIdentifier = kEscID;
+
+    [self present];
+
+    // App Nap will freeze the animation the moment you switch away, which is
+    // precisely when the pet is worth watching.
+    self.activity = [NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiated
+                                                                 reason:@"animate the Touch Bar pet"];
+
+    self.lastFrame = NSDate.timeIntervalSinceReferenceDate;
+    self.frameTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / kFPS repeats:YES
+                                                        block:^(NSTimer *t) { [self frame]; }];
+    // .common mode: default-mode timers stall inside menu/tracking loops.
+    [NSRunLoop.mainRunLoop addTimer:self.frameTimer forMode:NSRunLoopCommonModes];
+
+    // A presented bar yields when another app presents its own, so re-assert on
+    // every app switch. Cheap and idempotent.
+    [NSWorkspace.sharedWorkspace.notificationCenter
+        addObserver:self selector:@selector(present)
+               name:NSWorkspaceDidActivateApplicationNotification object:nil];
+
+    // Don't animate into a locked screen.
+    [NSDistributedNotificationCenter.defaultCenter
+        addObserver:self selector:@selector(sleep) name:@"com.apple.screenIsLocked" object:nil];
+    [NSDistributedNotificationCenter.defaultCenter
+        addObserver:self selector:@selector(wake) name:@"com.apple.screenIsUnlocked" object:nil];
+
+    [self poll];
+}
+
+- (void)present {
+    [NSTouchBar presentSystemModalTouchBar:self.bar placement:0 systemTrayItemIdentifier:nil];
+}
+
+- (void)sleep { self.asleep = YES; }
+- (void)wake  { self.asleep = NO; [self present]; }
+
+- (nullable NSTouchBarItem *)touchBar:(NSTouchBar *)bar
+                makeItemForIdentifier:(NSTouchBarItemIdentifier)identifier {
+    if ([identifier isEqualToString:kSceneID]) {
+        NSCustomTouchBarItem *it = [[NSCustomTouchBarItem alloc] initWithIdentifier:identifier];
+        it.view = self.pet;
+        return it;
+    }
+    if ([identifier isEqualToString:kEscID]) {
+        NSCustomTouchBarItem *it = [[NSCustomTouchBarItem alloc] initWithIdentifier:identifier];
+        it.view = [NSButton buttonWithTitle:@"esc" target:self action:@selector(sendEscape:)];
+        return it;
+    }
+    return nil;
+}
+
+- (void)sendEscape:(id)sender {
+    // Posting to the system requires no special right for a plain key event.
+    CGEventRef down = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)53, true);
+    CGEventRef up   = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)53, false);
+    CGEventPost(kCGHIDEventTap, down);
+    CGEventPost(kCGHIDEventTap, up);
+    if (down) CFRelease(down);
+    if (up)   CFRelease(up);
+}
+
+- (void)frame {
+    if (self.asleep) return;
+
+    NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
+    NSTimeInterval dt = MIN(now - self.lastFrame, 0.25);   // clamp after a stall
+    self.lastFrame = now;
+
+    [self.pet advance:dt];
+
+    if (now - self.lastPoll >= 30.0) { self.lastPoll = now; [self poll]; }
+}
+
+- (void)poll {
+    if (self.polling) return;
+    self.polling = YES;
+
+    dispatch_async(self.shell, ^{
+        NSTask *task = [NSTask new];
+        task.executableURL = [NSURL fileURLWithPath:@"/bin/bash"];
+        task.arguments = @[@"-lc", kScript];
+        NSPipe *pipe = [NSPipe pipe];
+        task.standardOutput = pipe;
+        task.standardError = NSFileHandle.fileHandleWithNullDevice;
+
+        NSString *out = nil;
+        NSError *err = nil;
+        if ([task launchAndReturnError:&err]) {
+            NSData *d = [pipe.fileHandleForReading readDataToEndOfFile];
+            [task waitUntilExit];
+            out = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+        }
+
+        NSArray<NSString *> *parts = [[out ?: @""
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
+            componentsSeparatedByString:@" "];
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (parts.count >= 5) {
+                self.pet.p5 = parts[0].intValue;
+                self.pet.p7 = parts[1].intValue;
+                self.pet.resetMin = parts[2].intValue;
+                self.pet.ageSec = parts[3].intValue;
+                self.pet.state = parts[4];
+                // The API also reports a per-model weekly cap (kind=weekly_scoped).
+                // Only surface it once it is actually being consumed — at 0% it is
+                // noise on a 30pt strip.
+                self.pet.scopedPct  = (parts.count >= 6) ? parts[5].intValue : -1;
+                self.pet.scopedName = (parts.count >= 7) ? parts[6] : @"";
+                self.pet.haveData = ![parts[4] isEqualToString:@"none"];
+            }
+            self.polling = NO;
+        });
+    });
+}
+
+- (void)applicationWillTerminate:(NSNotification *)note {
+    [NSTouchBar dismissSystemModalTouchBar:self.bar];
+    if (self.activity) [NSProcessInfo.processInfo endActivity:self.activity];
+}
+
+@end
+
+int main(void) {
+    @autoreleasepool {
+        NSApplication *app = NSApplication.sharedApplication;
+        AppDelegate *d = [AppDelegate new];
+        app.delegate = d;
+        [app run];
+    }
+    return 0;
+}

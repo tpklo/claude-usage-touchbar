@@ -1,0 +1,13 @@
+# Build output — reproducible with `make`
+ClaudeTouchBar.app/
+*.dSYM/
+.build/
+
+# Clawd's artwork and pose data are Anthropic's, and the pose library carries
+# no licence. Neither is redistributed here: `make assets` pulls both onto your
+# own machine from Claude.app and claudepix.vercel.app. See README.
+frames/
+clawd_presets.h
+
+# Local scratch
+spec.md
