@@ -54,6 +54,12 @@ missing-assets:
 test:
 	@./tools/test.sh
 
+# The Touch Bar cannot be screenshotted, so this renders the readout at a spread
+# of states to PNGs instead. The only way to actually look at a layout change.
+shots: $(BIN)
+	@./$(BIN) --render /tmp/claude-touchbar-shots
+	@open /tmp/claude-touchbar-shots
+
 # Start at login. An ad-hoc signature does not survive the bundle being copied,
 # so the agent points at the build directory rather than moving the app.
 install-agent: $(BIN)

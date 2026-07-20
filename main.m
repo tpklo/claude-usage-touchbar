@@ -35,6 +35,19 @@ static CGFloat const kSceneW = 560.0;   // fits the app region alongside the Con
 static CGFloat const kSceneH = 30.0;
 static double  const kFPS    = 15.0;    // both reference pet apps land at 14-18
 
+// Readout is a fixed four-column grid — label, bar, percentage, meta. The
+// previous free-placement version overlapped itself as soon as more than one
+// optional field was present: the alert glyph landed on the countdown, and the
+// per-model cap landed on both.
+#define COL_LABEL 360.0
+#define COL_BAR   380.0
+#define BAR_W      58.0    // sized so the widest reading — "94% !" at 14pt —
+                           // still clears the bar's right edge
+#define COL_PCT   492.0    // right edge; percentages are right-aligned so the
+                           // ones and tens columns line up between rows
+#define COL_META  500.0
+#define META_W     56.0
+
 #pragma mark - Mood
 
 // Mood is a pure function of the 5h burn: the pet's behaviour IS the gauge.
@@ -45,6 +58,14 @@ static Mood MoodForUsage(int p5) {
     if (p5 >= 60) return MoodTired;
     if (p5 >= 30) return MoodBrisk;
     return MoodCalm;
+}
+
+// Green / amber / red, thresholds matching the mood boundaries so the creature
+// and the numbers never disagree about how bad things are.
+static NSColor *ToneForPct(int pct) {
+    if (pct >= 90) return [NSColor colorWithSRGBRed:1.00 green:0.42 blue:0.33 alpha:1.0];
+    if (pct >= 70) return [NSColor colorWithSRGBRed:1.00 green:0.78 blue:0.31 alpha:1.0];
+    return [NSColor colorWithSRGBRed:0.48 green:0.86 blue:0.56 alpha:1.0];
 }
 
 static CGFloat SpeedForMood(Mood m) {
@@ -104,7 +125,9 @@ static int ClipForMood(Mood m) {
     if (self.act == ActWalk) {
         self.x += self.dir * SpeedForMood(m) * dt;
 
-        CGFloat pad = 30, right = NSWidth(self.bounds) - 210;  // clear of the readout
+        // Turn around before the sprite's own edge — not its centre — reaches
+        // the readout, or he walks over the "5h" label.
+        CGFloat pad = 30, right = COL_LABEL - (CLAWD_N * 1.95) / 2.0 - 8;
         if (self.x > right) { self.x = right; self.dir = -1; }
         if (self.x < pad)   { self.x = pad;   self.dir =  1; }
 
@@ -277,98 +300,98 @@ static void DrawGrid(const unsigned char *g, NSPoint origin, CGFloat px,
         NSRectFill(NSMakeRect(self.x + 8, feet.y + CLAWD_ROWS * px * 0.9, 2.4, 3.4));
     }
 
-    // Readout. The 5h window throttles you now, so it leads on size and weight;
-    // 7d is context but still legible (it was too faint to read before). Every
-    // number carries a unit or label — no bare figures to decode.
-    CGFloat rx = NSWidth(self.bounds) - 196;
-    CGFloat h  = NSHeight(self.bounds);
+    [self drawReadout];
+}
+
+static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *at) {
+    CGFloat w = [s sizeWithAttributes:at].width;
+    [s drawAtPoint:NSMakePoint(rightEdge - w, y) withAttributes:at];
+}
+
+- (void)drawReadout {
+    CGFloat h = NSHeight(self.bounds);
 
     int p5 = MAX(0, MIN(100, self.p5)), p7 = MAX(0, MIN(100, self.p7));
-    NSColor *(^tone)(int) = ^(int pct){
-        return (pct >= 90) ? [NSColor colorWithSRGBRed:1.00 green:0.42 blue:0.33 alpha:1.0]
-             : (pct >= 70) ? [NSColor colorWithSRGBRed:1.00 green:0.78 blue:0.31 alpha:1.0]
-                           : [NSColor colorWithSRGBRed:0.48 green:0.86 blue:0.56 alpha:1.0];
-    };
-    NSColor *track = [NSColor colorWithWhite:1.0 alpha:0.18];
     BOOL dead = [self.state isEqualToString:@"expired"];
     BOOL old  = [self.state isEqualToString:@"stale"];
 
-    // Stale or dead data must never look like a live reading.
-    CGFloat dim = dead ? 0.30 : (old ? 0.55 : 1.0);
+    // An expired token means every number on screen is a fossil. Dimming them
+    // is not enough — replace the readout outright, and say what fixes it.
+    if (dead) {
+        NSDictionary *t = @{ NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold],
+                             NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.45 blue:0.35 alpha:1.0] };
+        NSDictionary *s = @{ NSFontAttributeName: [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular],
+                             NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.55] };
+        [@"token expired" drawAtPoint:NSMakePoint(COL_LABEL, h - 16) withAttributes:t];
+        [@"claude -p hi" drawAtPoint:NSMakePoint(COL_LABEL, 3) withAttributes:s];
+        return;
+    }
 
-    // ── row 1: 5h ──────────────────────────────────────────────
-    NSDictionary *k5 = @{ NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightBold],
-                          NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.75 * dim] };
-    [@"5h" drawAtPoint:NSMakePoint(rx, h - 15) withAttributes:k5];
+    CGFloat dim = old ? 0.55 : 1.0;
 
-    [[track colorWithAlphaComponent:0.18 * dim] set];
-    NSRectFill(NSMakeRect(rx + 21, h - 13, 84, 8));
-    [[tone(p5) colorWithAlphaComponent:dim] set];
-    NSRectFill(NSMakeRect(rx + 21, h - 13, 84 * p5 / 100.0, 8));
-    // Tick marks at 50 and 90 — turns a bare bar into a scale you can read.
-    [[NSColor colorWithWhite:0 alpha:0.45 * dim] set];
-    NSRectFill(NSMakeRect(rx + 21 + 84 * 0.50, h - 13, 1, 8));
-    NSRectFill(NSMakeRect(rx + 21 + 84 * 0.90, h - 13, 1, 8));
+    // Top row leads: the 5-hour window is what throttles you right now.
+    [self drawRow:@"5h" pct:p5 y:h - 13 barH:8 pctSize:14 dim:dim];
+    [self drawRow:@"7d" pct:p7 y:4     barH:7 pctSize:13 dim:dim];
 
-    NSDictionary *n5 = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:14
-                                                                                weight:NSFontWeightBold],
-                          NSForegroundColorAttributeName: [tone(p5) colorWithAlphaComponent:dim] };
-    [[NSString stringWithFormat:@"%d%%", p5] drawAtPoint:NSMakePoint(rx + 111, h - 17) withAttributes:n5];
+    NSDictionary *meta = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:10
+                                                                                  weight:NSFontWeightMedium],
+                            NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.6 * dim] };
 
-    // reset countdown — back, and now it has room at a legible 10pt
-    if (self.resetMin >= 0 && !dead) {
-        NSDictionary *rs = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:10
-                                                                                    weight:NSFontWeightMedium],
-                              NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.55 * dim] };
+    // Meta column, one line per row, never two things in one slot.
+    if (self.resetMin >= 0) {
         [[NSString stringWithFormat:@"%dh%02d", self.resetMin / 60, self.resetMin % 60]
-            drawAtPoint:NSMakePoint(rx + 152, h - 14) withAttributes:rs];
+            drawAtPoint:NSMakePoint(COL_META, h - 14) withAttributes:meta];
     }
 
-    // ── row 2: 7d ──────────────────────────────────────────────
-    NSDictionary *k7 = @{ NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightBold],
-                          NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.62 * dim] };
-    [@"7d" drawAtPoint:NSMakePoint(rx, 2) withAttributes:k7];
-
-    [[track colorWithAlphaComponent:0.18 * dim] set];
-    NSRectFill(NSMakeRect(rx + 21, 4, 84, 7));
-    [[tone(p7) colorWithAlphaComponent:dim] set];
-    NSRectFill(NSMakeRect(rx + 21, 4, 84 * p7 / 100.0, 7));
-    [[NSColor colorWithWhite:0 alpha:0.45 * dim] set];
-    NSRectFill(NSMakeRect(rx + 21 + 84 * 0.50, 4, 1, 7));
-    NSRectFill(NSMakeRect(rx + 21 + 84 * 0.90, 4, 1, 7));
-
-    NSDictionary *n7 = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:13
-                                                                                weight:NSFontWeightBold],
-                          NSForegroundColorAttributeName: [tone(p7) colorWithAlphaComponent:dim] };
-    [[NSString stringWithFormat:@"%d%%", p7] drawAtPoint:NSMakePoint(rx + 111, 0) withAttributes:n7];
-
-    // Per-model cap rides on the 7d row: same window, narrower scope.
-    if (self.scopedPct > 0 && self.scopedName.length) {
-        NSColor *sc = [tone(self.scopedPct) colorWithAlphaComponent:0.95 * dim];
-        NSDictionary *sl = @{ NSFontAttributeName: [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold],
+    // Staleness outranks the per-model cap: if the numbers are old, saying so
+    // matters more than showing another one of them.
+    if (old) {
+        NSDictionary *w = @{ NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
+                             NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.78 blue:0.31 alpha:0.9] };
+        [[NSString stringWithFormat:@"%dm old", self.ageSec / 60]
+            drawAtPoint:NSMakePoint(COL_META, 3) withAttributes:meta];
+        (void)w;
+    } else if (self.scopedPct > 0 && self.scopedName.length) {
+        NSDictionary *nm = @{ NSFontAttributeName: [NSFont systemFontOfSize:9 weight:NSFontWeightMedium],
                               NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.5 * dim] };
-        NSDictionary *sv = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:10
+        NSDictionary *vl = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:10
                                                                                     weight:NSFontWeightBold],
-                              NSForegroundColorAttributeName: sc };
-        [self.scopedName drawAtPoint:NSMakePoint(rx + 152, 10) withAttributes:sl];
-        [[NSString stringWithFormat:@"%d%%", self.scopedPct]
-            drawAtPoint:NSMakePoint(rx + 152, 0) withAttributes:sv];
+                              NSForegroundColorAttributeName: [ToneForPct(self.scopedPct) colorWithAlphaComponent:dim] };
+        [self.scopedName drawAtPoint:NSMakePoint(COL_META, 3) withAttributes:nm];
+        DrawRight([NSString stringWithFormat:@"%d%%", self.scopedPct],
+                  COL_META + META_W, 3, vl);
+    }
+}
+
+- (void)drawRow:(NSString *)label pct:(int)pct y:(CGFloat)y
+           barH:(CGFloat)barH pctSize:(CGFloat)pctSize dim:(CGFloat)dim {
+    NSDictionary *lb = @{ NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightBold],
+                          NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.7 * dim] };
+    [label drawAtPoint:NSMakePoint(COL_LABEL, y - 2) withAttributes:lb];
+
+    [[NSColor colorWithWhite:1.0 alpha:0.16 * dim] set];
+    NSRectFill(NSMakeRect(COL_BAR, y, BAR_W, barH));
+
+    CGFloat fillW = BAR_W * pct / 100.0;
+    [[ToneForPct(pct) colorWithAlphaComponent:dim] set];
+    NSRectFill(NSMakeRect(COL_BAR, y, fillW, barH));
+
+    // Ticks at 50 and 90 turn the bar into a scale. Draw them only over the
+    // unfilled remainder: punching dark notches through a nearly-full bar read
+    // as the bar being broken into pieces.
+    [[NSColor colorWithWhite:1.0 alpha:0.28 * dim] set];
+    for (NSNumber *frac in @[@0.5, @0.9]) {
+        CGFloat tx = BAR_W * frac.doubleValue;
+        if (tx > fillW) NSRectFill(NSMakeRect(COL_BAR + tx, y, 1, barH));
     }
 
-    // ── status ─────────────────────────────────────────────────
-    // Colour alone is not enough: name the problem in words.
-    NSString *badge = dead ? @"token expired" : (old ? [NSString stringWithFormat:@"%dm ago", self.ageSec / 60] : nil);
-    if (badge) {
-        NSDictionary *bs = @{ NSFontAttributeName: [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold],
-                              NSForegroundColorAttributeName: dead
-                                  ? [NSColor colorWithSRGBRed:1.0 green:0.45 blue:0.35 alpha:1.0]
-                                  : [NSColor colorWithWhite:1.0 alpha:0.5] };
-        [badge drawAtPoint:NSMakePoint(rx + 152, 2) withAttributes:bs];
-    } else if (MAX(p5, p7) >= 90) {
-        NSDictionary *w = @{ NSFontAttributeName: [NSFont systemFontOfSize:12 weight:NSFontWeightHeavy],
-                             NSForegroundColorAttributeName: tone(MAX(p5, p7)) };
-        [@"!" drawAtPoint:NSMakePoint(rx + 152, (p5 >= p7) ? h - 16 : 1) withAttributes:w];
-    }
+    // Colour alone must not carry the warning.
+    NSString *num = (pct >= 90) ? [NSString stringWithFormat:@"%d%% !", pct]
+                                : [NSString stringWithFormat:@"%d%%", pct];
+    NSDictionary *nu = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:pctSize
+                                                                                weight:NSFontWeightBold],
+                          NSForegroundColorAttributeName: [ToneForPct(pct) colorWithAlphaComponent:dim] };
+    DrawRight(num, COL_PCT, y - 4, nu);
 }
 
 @end
@@ -530,8 +553,66 @@ static void DrawGrid(const unsigned char *g, NSPoint origin, CGFloat px,
 
 @end
 
-int main(void) {
+// --render <dir>: draw the readout to PNGs at a spread of states and exit.
+// The Touch Bar cannot be screenshotted, so this is the only way to actually
+// look at what drawRect: produces instead of guessing from the code.
+static int RenderStates(NSString *dir) {
+    NSDictionary *states = @{
+        @"01-low":      @[@12, @4,  @185, @"ok",      @0,  @""],
+        @"02-mid":      @[@48, @31, @92,  @"ok",      @0,  @""],
+        @"03-scoped":   @[@48, @31, @92,  @"ok",      @37, @"Fable"],
+        @"04-high":     @[@91, @68, @14,  @"ok",      @0,  @""],
+        @"05-both-high":@[@94, @96, @3,   @"ok",      @88, @"Fable"],
+        @"06-stale":    @[@48, @31, @92,  @"stale",   @0,  @""],
+        @"07-expired":  @[@48, @31, @-1,  @"expired", @0,  @""],
+        @"08-zero":     @[@0,  @0,  @300, @"ok",      @0,  @""],
+    };
+    [NSFileManager.defaultManager createDirectoryAtPath:dir
+                            withIntermediateDirectories:YES attributes:nil error:nil];
+
+    for (NSString *name in [states.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        NSArray *s = states[name];
+        PetView *v = [[PetView alloc] initWithFrame:NSMakeRect(0, 0, kSceneW, kSceneH)];
+        v.p5 = [s[0] intValue]; v.p7 = [s[1] intValue]; v.resetMin = [s[2] intValue];
+        v.state = s[3]; v.scopedPct = [s[4] intValue]; v.scopedName = s[5];
+        v.ageSec = 300; v.haveData = YES; v.x = 60;
+
+        // Two passes, and the order matters. drawRect: opens by filling itself
+        // with clearColor in copy mode, so anything painted underneath first is
+        // wiped — the widget must be drawn onto a transparent surface and only
+        // then composited over the dark backdrop, exactly as the Touch Bar
+        // does it. Flattening the two into one pass makes every translucent
+        // fill read as solid white.
+        NSImage *layer = [[NSImage alloc] initWithSize:v.bounds.size];
+        [layer lockFocus];
+        [v drawRect:v.bounds];
+        [layer unlockFocus];
+
+        NSImage *img = [[NSImage alloc] initWithSize:v.bounds.size];
+        [img lockFocus];
+        [[NSColor colorWithWhite:0.07 alpha:1.0] set];
+        NSRectFill(v.bounds);
+        [layer drawInRect:v.bounds fromRect:NSZeroRect
+                operation:NSCompositingOperationSourceOver fraction:1.0];
+        [img unlockFocus];
+
+        NSBitmapImageRep *out = [[NSBitmapImageRep alloc]
+            initWithData:[img TIFFRepresentation]];
+        NSData *png = [out representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        NSString *path = [dir stringByAppendingPathComponent:
+                          [name stringByAppendingString:@".png"]];
+        [png writeToFile:path atomically:YES];
+        printf("%s\n", path.UTF8String);
+    }
+    return 0;
+}
+
+int main(int argc, const char **argv) {
     @autoreleasepool {
+        if (argc == 3 && strcmp(argv[1], "--render") == 0) {
+            [NSApplication sharedApplication];   // AppKit drawing needs this
+            return RenderStates(@(argv[2]));
+        }
         NSApplication *app = NSApplication.sharedApplication;
         AppDelegate *d = [AppDelegate new];
         app.delegate = d;
