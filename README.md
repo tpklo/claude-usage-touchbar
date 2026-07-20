@@ -95,18 +95,18 @@ repository contains only code.
 
 ## Run it at login
 
-There is no installer for this yet. To start it with your session, create
-`~/Library/LaunchAgents/local.claude-touchbar.plist` pointing at the built
-binary, then `launchctl bootstrap gui/$UID <plist>`. Note that ad-hoc code
-signatures do not survive being copied — re-sign after moving the bundle:
-
 ```bash
-codesign --force --sign - /path/to/ClaudeTouchBar.app
+make install-agent      # start at login, restart on crash
+make uninstall-agent    # remove it again
 ```
 
-To remove: `launchctl bootout gui/$UID/local.claude-touchbar`, delete the
-plist and the bundle. Nothing else is left behind — no daemon, no preferences,
-no keychain entry of its own.
+The agent points at the bundle where you built it rather than copying it —
+an ad-hoc signature does not survive a copy. Keep the checkout where it is, or
+re-run `make install-agent` after moving it.
+
+It restarts on a crash but not when you quit it yourself, and it does not load
+outside a GUI session. Removing it leaves nothing behind: no daemon, no
+preferences, no keychain entry of its own.
 
 ## How it fits together
 
@@ -129,12 +129,21 @@ apart and happily displayed three-hour-old numbers as though they were live.
 ```bash
 make            # build the .app
 make assets     # re-extract artwork
+make test       # parser checks — no network, no keychain, no artwork
 make run        # build, restart, launch
 make stop
 make clean
 ```
 
-Single Objective-C file, no dependencies, no package manager.
+Single Objective-C file, no dependencies, no package manager. The script needs
+only `/usr/bin/python3`, which ships with the Command Line Tools the build
+already requires.
+
+`make test` covers the JSON parser, which is where a silent failure would hide:
+a wrong scale or a dropped field still prints something that reads like a valid
+measurement. CI runs it on every push, along with a check that no
+machine-specific path has crept into a tracked file — a hard-coded nvm path
+shipped once and broke every clone but the author's.
 
 ## Credits
 

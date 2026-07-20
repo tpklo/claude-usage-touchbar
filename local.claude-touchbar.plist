@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template. `make install-agent` substitutes __APP__ for the built bundle's
+  path and loads it; the file is not usable as-is.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>local.claude-touchbar</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__APP__/Contents/MacOS/ClaudeTouchBar</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Restart on a crash, but not on a clean exit. The app exits 0 when the
+       Touch Bar SPI is absent, and an unconditional KeepAlive would turn that
+       into a restart loop on any Mac without a Touch Bar. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <!-- Floor on restart frequency, so a crash-on-launch cannot spin. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <!-- A GUI session is required: without one there is no Touch Bar to present
+       to, and the app would spin in a restart loop. -->
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+
+  <key>ProcessType</key>
+  <string>Interactive</string>
+</dict>
+</plist>

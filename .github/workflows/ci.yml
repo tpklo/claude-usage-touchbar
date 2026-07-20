@@ -1,0 +1,34 @@
+name: ci
+
+# The app cannot be built here: `make assets` reads artwork out of a local
+# Claude.app install, which no runner has. What CI can do is exercise the JSON
+# parser — the piece that fails silently, since a wrong scale or a swallowed
+# field still prints something that looks like a valid reading.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: brew install shellcheck
+
+      - name: Parser and shell checks
+        run: make test
+
+      - name: Assert no machine-specific paths
+        run: |
+          # A hard-coded nvm path once shipped in the released script and broke
+          # every clone but the author's.
+          if grep -rn '/Users/[a-z]' $(git ls-files) ; then
+            echo "::error::a machine-specific path is present in a tracked file"
+            exit 1
+          fi
+          echo "clean"

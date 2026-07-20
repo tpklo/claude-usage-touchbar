@@ -8,7 +8,10 @@ FLAGS := -fobjc-arc -O2 -Wall \
          -framework Cocoa \
          -F/System/Library/PrivateFrameworks -framework DFRFoundation
 
-.PHONY: all assets install-script run stop clean missing-assets
+AGENT := local.claude-touchbar
+PLIST := $(HOME)/Library/LaunchAgents/$(AGENT).plist
+
+.PHONY: all assets test install-script install-agent uninstall-agent run stop clean missing-assets
 
 all: $(BIN)
 
@@ -44,6 +47,24 @@ missing-assets:
 	@echo "      make assets"
 	@echo ""
 	@exit 1
+
+# No network, no keychain, no artwork needed — this is what CI runs.
+test:
+	@./tools/test.sh
+
+# Start at login. An ad-hoc signature does not survive the bundle being copied,
+# so the agent points at the build directory rather than moving the app.
+install-agent: $(BIN)
+	@mkdir -p $(HOME)/Library/LaunchAgents
+	@sed 's|__APP__|$(CURDIR)/$(BUNDLE)|' $(AGENT).plist > $(PLIST)
+	@launchctl bootout gui/$(shell id -u)/$(AGENT) 2>/dev/null || true
+	@launchctl bootstrap gui/$(shell id -u) $(PLIST)
+	@echo "loaded $(AGENT) — starts at login, restarts if it dies"
+
+uninstall-agent:
+	@launchctl bootout gui/$(shell id -u)/$(AGENT) 2>/dev/null || true
+	@rm -f $(PLIST)
+	@echo "removed $(AGENT)"
 
 run: $(BIN) stop
 	open $(BUNDLE)
