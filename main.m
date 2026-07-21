@@ -373,11 +373,15 @@ static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *a
     // Thresholds are visible on the bar itself (ticks at 50 and 90), so a
     // change of colour lands where the user can see why, and ">= 90" also
     // prints "!" so the alarm never depends on colour vision alone.
+    // All three sit in the same family as the blue: high lightness, moderate
+    // saturation. The first attempt used a vivid amber and red at L60-62 next
+    // to an L84 lavender, which is why they read as borrowed from a different
+    // palette — the mismatch was lightness, not hue.
     BOOL alarm = (pct >= 90);
     NSColor *ink;
-    if (alarm)         ink = [NSColor colorWithSRGBRed:1.00 green:0.27 blue:0.23 alpha:1.0];
-    else if (pct >= 50) ink = [NSColor colorWithSRGBRed:0.98 green:0.75 blue:0.14 alpha:1.0];
-    else                ink = [NSColor colorWithSRGBRed:0.694 green:0.725 blue:0.976 alpha:1.0];
+    if (alarm)          ink = [NSColor colorWithSRGBRed:0.906 green:0.424 blue:0.373 alpha:1.0];  // #E76C5F
+    else if (pct >= 50) ink = [NSColor colorWithSRGBRed:0.929 green:0.851 blue:0.584 alpha:1.0];  // #EDD995
+    else                ink = [NSColor colorWithSRGBRed:0.694 green:0.725 blue:0.976 alpha:1.0];  // #B1B9F9
 
     NSDictionary *lb = @{ NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
                           NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.70 * dim] };
