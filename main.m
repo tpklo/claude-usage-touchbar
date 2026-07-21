@@ -35,18 +35,18 @@ static CGFloat const kSceneW = 560.0;   // fits the app region alongside the Con
 static CGFloat const kSceneH = 30.0;
 static double  const kFPS    = 15.0;    // both reference pet apps land at 14-18
 
-// Readout is a fixed four-column grid — label, bar, percentage, meta. The
-// previous free-placement version overlapped itself as soon as more than one
-// optional field was present: the alert glyph landed on the countdown, and the
-// per-model cap landed on both.
-#define COL_LABEL 360.0
-#define COL_BAR   380.0
-#define BAR_W      58.0    // sized so the widest reading — "94% !" at 14pt —
-                           // still clears the bar's right edge
-#define COL_PCT   492.0    // right edge; percentages are right-aligned so the
-                           // ones and tens columns line up between rows
-#define COL_META  500.0
-#define META_W     56.0
+// Readout: every limit gets an identical cell — label, percentage, bar — laid
+// out side by side so they can be compared at a glance. Earlier versions gave
+// 5h and 7d a row each and demoted the per-model cap to a bare number with no
+// bar, which made the one number you could not compare the odd one out.
+#define READ_X    296.0    // left edge of the readout block
+#define READ_W    258.0    // to x=554, clear of the 560pt right edge
+#define CELL_GAP    9.0
+// 30pt of height only fits two tiers. A third one for the countdown pushed the
+// labels off the top edge, so the countdown rides alongside the first label.
+#define BAR_Y       3.0
+#define BAR_H       8.0
+#define TEXT_Y     14.0
 
 #pragma mark - Mood
 
@@ -58,14 +58,6 @@ static Mood MoodForUsage(int p5) {
     if (p5 >= 60) return MoodTired;
     if (p5 >= 30) return MoodBrisk;
     return MoodCalm;
-}
-
-// Green / amber / red, thresholds matching the mood boundaries so the creature
-// and the numbers never disagree about how bad things are.
-static NSColor *ToneForPct(int pct) {
-    if (pct >= 90) return [NSColor colorWithSRGBRed:1.00 green:0.42 blue:0.33 alpha:1.0];
-    if (pct >= 70) return [NSColor colorWithSRGBRed:1.00 green:0.78 blue:0.31 alpha:1.0];
-    return [NSColor colorWithSRGBRed:0.48 green:0.86 blue:0.56 alpha:1.0];
 }
 
 static CGFloat SpeedForMood(Mood m) {
@@ -127,7 +119,7 @@ static int ClipForMood(Mood m) {
 
         // Turn around before the sprite's own edge — not its centre — reaches
         // the readout, or he walks over the "5h" label.
-        CGFloat pad = 30, right = COL_LABEL - (CLAWD_N * 1.95) / 2.0 - 8;
+        CGFloat pad = 30, right = READ_X - (CLAWD_N * 1.95) / 2.0 - 8;
         if (self.x > right) { self.x = right; self.dir = -1; }
         if (self.x < pad)   { self.x = pad;   self.dir =  1; }
 
@@ -322,76 +314,83 @@ static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *a
                              NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.45 blue:0.35 alpha:1.0] };
         NSDictionary *s = @{ NSFontAttributeName: [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular],
                              NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.55] };
-        [@"token expired" drawAtPoint:NSMakePoint(COL_LABEL, h - 16) withAttributes:t];
-        [@"claude -p hi" drawAtPoint:NSMakePoint(COL_LABEL, 3) withAttributes:s];
+        [@"token expired" drawAtPoint:NSMakePoint(READ_X, h - 16) withAttributes:t];
+        [@"claude -p hi" drawAtPoint:NSMakePoint(READ_X, 3) withAttributes:s];
         return;
     }
 
     CGFloat dim = old ? 0.55 : 1.0;
 
-    // Top row leads: the 5-hour window is what throttles you right now.
-    [self drawRow:@"5h" pct:p5 y:h - 13 barH:8 pctSize:14 dim:dim];
-    [self drawRow:@"7d" pct:p7 y:4     barH:7 pctSize:13 dim:dim];
-
-    NSDictionary *meta = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:10
-                                                                                  weight:NSFontWeightMedium],
-                            NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.6 * dim] };
-
-    // Meta column, one line per row, never two things in one slot.
-    if (self.resetMin >= 0) {
-        [[NSString stringWithFormat:@"%dh%02d", self.resetMin / 60, self.resetMin % 60]
-            drawAtPoint:NSMakePoint(COL_META, h - 14) withAttributes:meta];
+    // One cell per limit. The per-model cap only exists once it is being
+    // consumed, so the block is two or three cells wide and shares the width
+    // evenly — no cell is ever the runt with a number but no bar.
+    NSMutableArray *cells = [@[@[@"5h", @(p5)], @[@"7d", @(p7)]] mutableCopy];
+    if (self.scopedPct > 0 && self.scopedName.length) {
+        [cells addObject:@[self.scopedName, @(self.scopedPct)]];
     }
 
-    // Staleness outranks the per-model cap: if the numbers are old, saying so
-    // matters more than showing another one of them.
+    NSInteger n = cells.count;
+    CGFloat cellW = (READ_W - CELL_GAP * (n - 1)) / n;
+    for (NSInteger i = 0; i < n; i++) {
+        [self drawCell:cells[i][0] pct:[cells[i][1] intValue]
+                     x:READ_X + i * (cellW + CELL_GAP) width:cellW dim:dim];
+    }
+
+    // The countdown belongs to the 5h window, so it sits beside that label
+    // rather than in a row of its own. Staleness takes the same slot when it
+    // applies — an old reading matters more than when the next one resets.
+    NSString *note = nil;
+    NSColor *noteColor = [NSColor colorWithWhite:1.0 alpha:0.45];
     if (old) {
-        NSDictionary *w = @{ NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
-                             NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.78 blue:0.31 alpha:0.9] };
-        [[NSString stringWithFormat:@"%dm old", self.ageSec / 60]
-            drawAtPoint:NSMakePoint(COL_META, 3) withAttributes:meta];
-        (void)w;
-    } else if (self.scopedPct > 0 && self.scopedName.length) {
-        NSDictionary *nm = @{ NSFontAttributeName: [NSFont systemFontOfSize:9 weight:NSFontWeightMedium],
-                              NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.5 * dim] };
-        NSDictionary *vl = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:10
-                                                                                    weight:NSFontWeightBold],
-                              NSForegroundColorAttributeName: [ToneForPct(self.scopedPct) colorWithAlphaComponent:dim] };
-        [self.scopedName drawAtPoint:NSMakePoint(COL_META, 3) withAttributes:nm];
-        DrawRight([NSString stringWithFormat:@"%d%%", self.scopedPct],
-                  COL_META + META_W, 3, vl);
+        note = [NSString stringWithFormat:@"%dm old", self.ageSec / 60];
+        noteColor = [NSColor colorWithSRGBRed:1.0 green:0.78 blue:0.31 alpha:0.95];
+    } else if (self.resetMin >= 0) {
+        note = [NSString stringWithFormat:@"%dh%02d", self.resetMin / 60, self.resetMin % 60];
+    }
+    if (note) {
+        NSDictionary *at = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8
+                                                                                    weight:NSFontWeightMedium],
+                              NSForegroundColorAttributeName: noteColor };
+        [note drawAtPoint:NSMakePoint(READ_X + 17, TEXT_Y + 1) withAttributes:at];
     }
 }
 
-- (void)drawRow:(NSString *)label pct:(int)pct y:(CGFloat)y
-           barH:(CGFloat)barH pctSize:(CGFloat)pctSize dim:(CGFloat)dim {
-    NSDictionary *lb = @{ NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightBold],
-                          NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.7 * dim] };
-    [label drawAtPoint:NSMakePoint(COL_LABEL, y - 2) withAttributes:lb];
+// A cell is label + percentage on one line, bar underneath, all cells identical.
+// Colour does NOT track the value: the bar's length already says how full it is,
+// and a green-to-red ramp restates that with invisible thresholds (why is 68%
+// green and 71% amber?). Colour is spent only on the one state that needs an
+// action — at or above 90% — so it reads as an alarm rather than decoration.
+- (void)drawCell:(NSString *)label pct:(int)pct x:(CGFloat)x width:(CGFloat)w dim:(CGFloat)dim {
+    BOOL alarm = (pct >= 90);
+    NSColor *ink = alarm ? [NSColor colorWithSRGBRed:1.00 green:0.42 blue:0.33 alpha:1.0]
+                         : [NSColor colorWithSRGBRed:0.804 green:0.498 blue:0.416 alpha:1.0];  // Clawd's coral
 
-    [[NSColor colorWithWhite:1.0 alpha:0.16 * dim] set];
-    NSRectFill(NSMakeRect(COL_BAR, y, BAR_W, barH));
+    NSDictionary *lb = @{ NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
+                          NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.62 * dim] };
+    [label drawAtPoint:NSMakePoint(x, TEXT_Y) withAttributes:lb];
 
-    CGFloat fillW = BAR_W * pct / 100.0;
-    [[ToneForPct(pct) colorWithAlphaComponent:dim] set];
-    NSRectFill(NSMakeRect(COL_BAR, y, fillW, barH));
-
-    // Ticks at 50 and 90 turn the bar into a scale. Draw them only over the
-    // unfilled remainder: punching dark notches through a nearly-full bar read
-    // as the bar being broken into pieces.
-    [[NSColor colorWithWhite:1.0 alpha:0.28 * dim] set];
-    for (NSNumber *frac in @[@0.5, @0.9]) {
-        CGFloat tx = BAR_W * frac.doubleValue;
-        if (tx > fillW) NSRectFill(NSMakeRect(COL_BAR + tx, y, 1, barH));
-    }
-
-    // Colour alone must not carry the warning.
-    NSString *num = (pct >= 90) ? [NSString stringWithFormat:@"%d%% !", pct]
-                                : [NSString stringWithFormat:@"%d%%", pct];
-    NSDictionary *nu = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:pctSize
+    // Every percentage is the same size and weight — one glance, one scale.
+    NSString *num = alarm ? [NSString stringWithFormat:@"%d%% !", pct]
+                          : [NSString stringWithFormat:@"%d%%", pct];
+    NSDictionary *nu = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:12
                                                                                 weight:NSFontWeightBold],
-                          NSForegroundColorAttributeName: [ToneForPct(pct) colorWithAlphaComponent:dim] };
-    DrawRight(num, COL_PCT, y - 4, nu);
+                          NSForegroundColorAttributeName: [ink colorWithAlphaComponent:dim] };
+    DrawRight(num, x + w, TEXT_Y - 1, nu);
+
+    [[NSColor colorWithWhite:1.0 alpha:0.15 * dim] set];
+    NSRectFill(NSMakeRect(x, BAR_Y, w, BAR_H));
+
+    CGFloat fillW = w * pct / 100.0;
+    [[ink colorWithAlphaComponent:dim] set];
+    NSRectFill(NSMakeRect(x, BAR_Y, fillW, BAR_H));
+
+    // Ticks at 50 and 90 turn the bar into a scale, drawn only over the unfilled
+    // remainder — notches punched through a nearly-full bar read as breakage.
+    [[NSColor colorWithWhite:1.0 alpha:0.3 * dim] set];
+    for (NSNumber *frac in @[@0.5, @0.9]) {
+        CGFloat tx = w * frac.doubleValue;
+        if (tx > fillW) NSRectFill(NSMakeRect(x + tx, BAR_Y, 1, BAR_H));
+    }
 }
 
 @end
