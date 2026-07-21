@@ -97,6 +97,8 @@ static int ClipForMood(Mood m) {
 @property (nonatomic) NSInteger clipIdx;        // which clip in kClawdClips
 @property (nonatomic) NSTimeInterval clipT, sinceAct;
 @property (nonatomic) CGFloat ballY, ballV;   // juggled ball: height above his head, velocity
+@property (nonatomic) BOOL dragging;
+@property (nonatomic) CGFloat grabDX, dragVX, lastDragX, throwVX;
 @end
 
 @implementation PetView
@@ -105,14 +107,84 @@ static int ClipForMood(Mood m) {
     if ((self = [super initWithFrame:f])) {
         _x = 40; _dir = 1; _p5 = 0; _p7 = 0; _resetMin = -1;
         _act = ActWalk;
+        // Without this the view gets direct touches only intermittently.
+        self.allowedTouchTypes = NSTouchTypeMaskDirect;
     }
     return self;
 }
 
 - (BOOL)isFlipped { return NO; }
+- (BOOL)acceptsFirstResponder { return YES; }
+- (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
+
+// Touch. A view must opt in to direct touches or it receives them only
+// sporadically — that inconsistency cost four rounds of testing to spot.
+- (void)touchesBeganWithEvent:(NSEvent *)e {
+    NSTouch *t = [e touchesMatchingPhase:NSTouchPhaseAny inView:self].anyObject
+              ?: [e touchesMatchingPhase:NSTouchPhaseAny inView:nil].anyObject;
+    if (!t) return;
+    // Direct touches report a real point in the view. normalizedPosition and
+    // deviceSize belong to indirect (trackpad) touches and raise here.
+    CGFloat tx = [t locationInView:self].x;
+    // Grab only if the touch lands on him, with a generous margin: he is 39pt
+    // wide on a bar you hit with a fingertip.
+    if (fabs(tx - self.x) < 34) {
+        self.dragging = YES;
+        self.grabDX = tx - self.x;
+        self.dragVX = 0;
+        self.lastDragX = tx;
+        self.act = ActClip;              // stop pacing while held
+        self.clipIdx = 4;                // surprise
+        self.clip = 0; self.clipT = 0;
+    }
+}
+
+- (void)touchesMovedWithEvent:(NSEvent *)e {
+    if (!self.dragging) return;
+    NSTouch *t = [e touchesMatchingPhase:NSTouchPhaseAny inView:self].anyObject
+              ?: [e touchesMatchingPhase:NSTouchPhaseAny inView:nil].anyObject;
+    if (!t) return;
+    CGFloat tx = [t locationInView:self].x;
+    CGFloat nx = tx - self.grabDX;
+    self.dragVX = tx - self.lastDragX;   // for the throw
+    self.lastDragX = tx;
+    self.x = MAX(20, MIN(nx, NSWidth(self.bounds) - 20));
+    if (fabs(self.dragVX) > 0.5) self.dir = (self.dragVX > 0) ? 1 : -1;
+    self.needsDisplay = YES;
+}
+
+- (void)touchesEndedWithEvent:(NSEvent *)e   { [self releaseDrag]; }
+- (void)touchesCancelledWithEvent:(NSEvent *)e { [self releaseDrag]; }
+
+- (void)releaseDrag {
+    if (!self.dragging) return;
+    self.dragging = NO;
+    // Throw: carry the flick into a slide that decays, instead of stopping dead.
+    self.throwVX = self.dragVX * 12.0;
+    self.act = ActWalk;
+    self.sinceAct = 0;
+}
 
 - (void)advance:(NSTimeInterval)dt {
     Mood m = MoodForUsage(self.p5);
+
+    if (self.dragging) {          // held: the finger owns his position
+        self.phase += dt * 6.0;
+        self.needsDisplay = YES;
+        return;
+    }
+
+    // A throw slides and decays back into the normal pacing speed.
+    if (fabs(self.throwVX) > 1.0) {
+        self.x += self.throwVX * dt;
+        self.throwVX *= 0.92;
+        CGFloat lo = 20, hi = NSWidth(self.bounds) - 20;
+        if (self.x < lo) { self.x = lo; self.throwVX = -self.throwVX * 0.5; self.dir = 1; }
+        if (self.x > hi) { self.x = hi; self.throwVX = -self.throwVX * 0.5; self.dir = -1; }
+        self.phase += dt * (fabs(self.throwVX) / 9.0);
+        self.needsDisplay = YES;
+        return;
+    }
 
     if (self.act == ActWalk) {
         self.x += self.dir * SpeedForMood(m) * dt;
@@ -504,6 +576,7 @@ static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *a
         return;
     }
 
+    NSLog(@"SPIKE ready — NSLog works, waiting for touches");
     DFRSystemModalShowsCloseBoxWhenFrontMost(NO);
 
     if (self.paletteMode) {
