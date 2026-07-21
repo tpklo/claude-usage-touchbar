@@ -365,14 +365,19 @@ static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *a
 // green and 71% amber?). Colour is spent only on the one state that needs an
 // action — at or above 90% — so it reads as an alarm rather than decoration.
 - (void)drawCell:(NSString *)label pct:(int)pct x:(CGFloat)x width:(CGFloat)w dim:(CGFloat)dim {
-    // Measured, not eyeballed: Clawd's coral against the alarm red came out at
-    // 1.08:1 — two warm tones of near-identical luminance, which at 88% versus
-    // 94% is no signal at all, and worse under deuteranopia. The readout is
-    // therefore neutral by default and red only when it matters (2.6:1 apart,
-    // and still distinct simulated colour-blind). Coral stays Clawd's alone.
+    // #B1B9F9 is the exact colour Claude Code fills its own /usage bars with —
+    // read off the escape codes it emits, not guessed. Amber and red take over
+    // as the window fills. Coral is deliberately absent: it is Clawd's, and at
+    // 1.08:1 against a warning red it could not carry a warning anyway.
+    //
+    // Thresholds are visible on the bar itself (ticks at 50 and 90), so a
+    // change of colour lands where the user can see why, and ">= 90" also
+    // prints "!" so the alarm never depends on colour vision alone.
     BOOL alarm = (pct >= 90);
-    NSColor *ink = alarm ? [NSColor colorWithSRGBRed:1.00 green:0.27 blue:0.23 alpha:1.0]
-                         : [NSColor colorWithSRGBRed:0.88 green:0.88 blue:0.89 alpha:1.0];
+    NSColor *ink;
+    if (alarm)         ink = [NSColor colorWithSRGBRed:1.00 green:0.27 blue:0.23 alpha:1.0];
+    else if (pct >= 50) ink = [NSColor colorWithSRGBRed:0.98 green:0.75 blue:0.14 alpha:1.0];
+    else                ink = [NSColor colorWithSRGBRed:0.694 green:0.725 blue:0.976 alpha:1.0];
 
     NSDictionary *lb = @{ NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
                           NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.70 * dim] };
