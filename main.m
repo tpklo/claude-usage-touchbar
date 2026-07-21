@@ -319,7 +319,11 @@ static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *a
         return;
     }
 
-    CGFloat dim = old ? 0.55 : 1.0;
+    // Staleness is already stated in words by the amber badge, so the dimming
+    // only needs to be a hint. At 0.55 it dragged the labels to 2.9:1 — below
+    // the 4.5:1 floor, i.e. the state that says "do not trust this" was the
+    // one you could not read.
+    CGFloat dim = old ? 0.72 : 1.0;
 
     // One cell per limit. The per-model cap only exists once it is being
     // consumed, so the block is two or three cells wide and shares the width
@@ -340,7 +344,7 @@ static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *a
     // rather than in a row of its own. Staleness takes the same slot when it
     // applies — an old reading matters more than when the next one resets.
     NSString *note = nil;
-    NSColor *noteColor = [NSColor colorWithWhite:1.0 alpha:0.45];
+    NSColor *noteColor = [NSColor colorWithWhite:1.0 alpha:0.55];
     if (old) {
         note = [NSString stringWithFormat:@"%dm old", self.ageSec / 60];
         noteColor = [NSColor colorWithSRGBRed:1.0 green:0.78 blue:0.31 alpha:0.95];
@@ -361,12 +365,17 @@ static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *a
 // green and 71% amber?). Colour is spent only on the one state that needs an
 // action — at or above 90% — so it reads as an alarm rather than decoration.
 - (void)drawCell:(NSString *)label pct:(int)pct x:(CGFloat)x width:(CGFloat)w dim:(CGFloat)dim {
+    // Measured, not eyeballed: Clawd's coral against the alarm red came out at
+    // 1.08:1 — two warm tones of near-identical luminance, which at 88% versus
+    // 94% is no signal at all, and worse under deuteranopia. The readout is
+    // therefore neutral by default and red only when it matters (2.6:1 apart,
+    // and still distinct simulated colour-blind). Coral stays Clawd's alone.
     BOOL alarm = (pct >= 90);
-    NSColor *ink = alarm ? [NSColor colorWithSRGBRed:1.00 green:0.42 blue:0.33 alpha:1.0]
-                         : [NSColor colorWithSRGBRed:0.804 green:0.498 blue:0.416 alpha:1.0];  // Clawd's coral
+    NSColor *ink = alarm ? [NSColor colorWithSRGBRed:1.00 green:0.27 blue:0.23 alpha:1.0]
+                         : [NSColor colorWithSRGBRed:0.88 green:0.88 blue:0.89 alpha:1.0];
 
     NSDictionary *lb = @{ NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
-                          NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.62 * dim] };
+                          NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.70 * dim] };
     [label drawAtPoint:NSMakePoint(x, TEXT_Y) withAttributes:lb];
 
     // Every percentage is the same size and weight — one glance, one scale.
@@ -377,7 +386,8 @@ static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *a
                           NSForegroundColorAttributeName: [ink colorWithAlphaComponent:dim] };
     DrawRight(num, x + w, TEXT_Y - 1, nu);
 
-    [[NSColor colorWithWhite:1.0 alpha:0.15 * dim] set];
+    // The track is the 100% reference, not decoration — keep it readable.
+    [[NSColor colorWithWhite:1.0 alpha:0.36 * dim] set];
     NSRectFill(NSMakeRect(x, BAR_Y, w, BAR_H));
 
     CGFloat fillW = w * pct / 100.0;
@@ -589,7 +599,9 @@ static int RenderStates(NSString *dir) {
 
         NSImage *img = [[NSImage alloc] initWithSize:v.bounds.size];
         [img lockFocus];
-        [[NSColor colorWithWhite:0.07 alpha:1.0] set];
+        // Black, exactly like the Touch Bar: a lighter backdrop lifts every
+        // translucent fill and makes measured contrast look better than it is.
+        [[NSColor blackColor] set];
         NSRectFill(v.bounds);
         [layer drawInRect:v.bounds fromRect:NSZeroRect
                 operation:NSCompositingOperationSourceOver fraction:1.0];
