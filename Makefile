@@ -66,6 +66,16 @@ install-agent: $(BIN)
 	@mkdir -p $(HOME)/Library/LaunchAgents
 	@sed 's|__APP__|$(CURDIR)/$(BUNDLE)|' $(AGENT).plist > $(PLIST)
 	@launchctl bootout gui/$(shell id -u)/$(AGENT) 2>/dev/null || true
+	@# bootout returns before the job is fully gone, and bootstrapping over a
+	@# job still scheduled to respawn fails with EIO. Wait for it to clear.
+	@for i in 1 2 3 4 5 6 7 8 9 10; do \
+	   launchctl print gui/$(shell id -u)/$(AGENT) >/dev/null 2>&1 || break; \
+	   sleep 0.5; \
+	 done
+	@# Re-sign immediately before loading: `make` re-signs on every build, and a
+	@# running launchd job holding the old signature makes the next spawn die
+	@# with OS_REASON_CODESIGNING.
+	@codesign --force --sign - $(BUNDLE) 2>/dev/null
 	@launchctl bootstrap gui/$(shell id -u) $(PLIST)
 	@echo "loaded $(AGENT) — starts at login, restarts if it dies"
 
