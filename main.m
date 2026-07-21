@@ -373,16 +373,15 @@ static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *a
     // Thresholds are visible on the bar itself (ticks at 50 and 90), so a
     // change of colour lands where the user can see why, and ">= 90" also
     // prints "!" so the alarm never depends on colour vision alone.
-    // Claude Code's own bar colour is #B1B9F9 — hue 233, which is far enough
-    // toward violet to read as lavender, at L84 where it looks washed out on a
-    // 30pt strip seen at a glance. Shifted to hue 207 and L60: unmistakably
-    // blue, and strong enough to hold at this size. Amber follows it down so
-    // the three stay one family.
+    // Picked on the Touch Bar itself via `--palette`, not from renders. Claude
+    // Code's own #B1B9F9 was the starting point and lost: hue 233 reads as
+    // lavender and L84 washes out on a 30pt strip you glance at. A panel this
+    // dim wants more saturation and less lightness than a terminal does.
     BOOL alarm = (pct >= 90);
     NSColor *ink;
-    if (alarm)          ink = [NSColor colorWithSRGBRed:0.906 green:0.424 blue:0.373 alpha:1.0];  // #E76C5F
-    else if (pct >= 50) ink = [NSColor colorWithSRGBRed:0.945 green:0.796 blue:0.400 alpha:1.0];  // #F1CB66
-    else                ink = [NSColor colorWithSRGBRed:0.271 green:0.631 blue:0.925 alpha:1.0];  // #45A1EC
+    if (alarm)          ink = [NSColor colorWithSRGBRed:0.902 green:0.208 blue:0.180 alpha:1.0];  // #E6352E
+    else if (pct >= 50) ink = [NSColor colorWithSRGBRed:0.949 green:0.706 blue:0.161 alpha:1.0];  // #F2B429
+    else                ink = [NSColor colorWithSRGBRed:0.173 green:0.533 blue:0.945 alpha:1.0];  // #2C88F1
 
     NSDictionary *lb = @{ NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
                           NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.70 * dim] };
@@ -417,7 +416,72 @@ static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *a
 
 #pragma mark - App
 
+#pragma mark - Palette picker
+
+// `--palette` puts candidate colours on the actual Touch Bar side by side.
+// Renders to PNG are useful for layout, but a colour has to be judged on the
+// panel it will live on — this one is dim, warm, and viewed at a glance.
+@interface PaletteView : NSView
+@end
+
+@implementation PaletteView
+- (BOOL)isFlipped { return NO; }
+- (void)drawRect:(NSRect)dirty {
+    [NSColor.clearColor set];
+    NSRectFill(dirty);
+
+    // Two rows: amber candidates above, red below. Both are judged against the
+    // blue that was already chosen, so that one is drawn at the far left as a
+    // fixed reference rather than left to memory.
+    NSColor *chosenBlue = [NSColor colorWithSRGBRed:0.173 green:0.533 blue:0.945 alpha:1.0];  // E
+
+    NSArray *ambers = @[
+        @[@"1", [NSColor colorWithSRGBRed:0.961 green:0.831 blue:0.400 alpha:1.0]],  // F5D466
+        @[@"2", [NSColor colorWithSRGBRed:0.957 green:0.773 blue:0.267 alpha:1.0]],  // F4C544
+        @[@"3", [NSColor colorWithSRGBRed:0.949 green:0.706 blue:0.161 alpha:1.0]],  // F2B429
+        @[@"4", [NSColor colorWithSRGBRed:0.937 green:0.639 blue:0.129 alpha:1.0]],  // EFA321
+    ];
+    NSArray *reds = @[
+        @[@"1", [NSColor colorWithSRGBRed:0.937 green:0.427 blue:0.376 alpha:1.0]],  // EF6D60
+        @[@"2", [NSColor colorWithSRGBRed:0.925 green:0.318 blue:0.263 alpha:1.0]],  // EC5143
+        @[@"3", [NSColor colorWithSRGBRed:0.902 green:0.208 blue:0.180 alpha:1.0]],  // E6352E
+        @[@"4", [NSColor colorWithSRGBRed:0.996 green:0.271 blue:0.227 alpha:1.0]],  // FE453A
+    ];
+
+    NSDictionary *lb = @{ NSFontAttributeName: [NSFont systemFontOfSize:9 weight:NSFontWeightBold],
+                          NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.75] };
+
+    // Reference: the chosen blue, full height, so both rows sit next to it.
+    [@"blue" drawAtPoint:NSMakePoint(4, 9) withAttributes:lb];
+    [[NSColor colorWithWhite:1.0 alpha:0.36] set];
+    NSRectFill(NSMakeRect(34, 2, 44, 26));
+    [chosenBlue set];
+    NSRectFill(NSMakeRect(34, 2, 44 * 0.48, 26));
+
+    CGFloat x0 = 92, avail = NSWidth(self.bounds) - x0 - 6;
+    CGFloat w = avail / ambers.count;
+
+    for (NSInteger i = 0; i < ambers.count; i++) {
+        CGFloat x = x0 + i * w, cw = w - 10;
+        // amber row (top)
+        [[NSString stringWithFormat:@"A%@", ambers[i][0]] drawAtPoint:NSMakePoint(x, 16) withAttributes:lb];
+        [[NSColor colorWithWhite:1.0 alpha:0.36] set];
+        NSRectFill(NSMakeRect(x + 22, 17, cw - 22, 9));
+        [(NSColor *)ambers[i][1] set];
+        NSRectFill(NSMakeRect(x + 22, 17, (cw - 22) * 0.68, 9));
+
+        // red row (bottom)
+        [[NSString stringWithFormat:@"R%@", reds[i][0]] drawAtPoint:NSMakePoint(x, 2) withAttributes:lb];
+        [[NSColor colorWithWhite:1.0 alpha:0.36] set];
+        NSRectFill(NSMakeRect(x + 22, 3, cw - 22, 9));
+        [(NSColor *)reds[i][1] set];
+        NSRectFill(NSMakeRect(x + 22, 3, (cw - 22) * 0.94, 9));
+    }
+}
+@end
+
 @interface AppDelegate : NSObject <NSApplicationDelegate, NSTouchBarDelegate>
+@property (nonatomic) BOOL paletteMode;
 @property (nonatomic, strong) NSTouchBar *bar;
 @property (nonatomic, strong) PetView *pet;
 @property (nonatomic, strong) NSTimer *frameTimer;
@@ -441,6 +505,16 @@ static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *a
     }
 
     DFRSystemModalShowsCloseBoxWhenFrontMost(NO);
+
+    if (self.paletteMode) {
+        self.bar = [NSTouchBar new];
+        self.bar.delegate = self;
+        self.bar.defaultItemIdentifiers = @[kSceneID];
+        self.bar.escapeKeyReplacementItemIdentifier = kEscID;
+        [self present];
+        NSLog(@"palette mode — ปิดด้วย Ctrl-C");
+        return;
+    }
 
     self.pet = [[PetView alloc] initWithFrame:NSMakeRect(0, 0, kSceneW, kSceneH)];
 
@@ -489,7 +563,9 @@ static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *a
                 makeItemForIdentifier:(NSTouchBarItemIdentifier)identifier {
     if ([identifier isEqualToString:kSceneID]) {
         NSCustomTouchBarItem *it = [[NSCustomTouchBarItem alloc] initWithIdentifier:identifier];
-        it.view = self.pet;
+        it.view = self.paletteMode
+            ? [[PaletteView alloc] initWithFrame:NSMakeRect(0, 0, kSceneW, kSceneH)]
+            : (NSView *)self.pet;
         return it;
     }
     if ([identifier isEqualToString:kEscID]) {
@@ -636,6 +712,7 @@ int main(int argc, const char **argv) {
         }
         NSApplication *app = NSApplication.sharedApplication;
         AppDelegate *d = [AppDelegate new];
+        d.paletteMode = (argc == 2 && strcmp(argv[1], "--palette") == 0);
         app.delegate = d;
         [app run];
     }

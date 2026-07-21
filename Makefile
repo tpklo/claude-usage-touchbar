@@ -11,7 +11,7 @@ FLAGS := -fobjc-arc -O2 -Wall \
 AGENT := local.claude-touchbar
 PLIST := $(HOME)/Library/LaunchAgents/$(AGENT).plist
 
-.PHONY: all assets test install-script install-agent uninstall-agent run stop clean missing-assets
+.PHONY: all assets test palette install-script install-agent uninstall-agent run stop clean missing-assets
 
 all: $(BIN)
 
@@ -83,6 +83,13 @@ uninstall-agent:
 	@launchctl bootout gui/$(shell id -u)/$(AGENT) 2>/dev/null || true
 	@rm -f $(PLIST)
 	@echo "removed $(AGENT)"
+
+# Candidate colours side by side on the actual Touch Bar. A colour has to be
+# judged on the panel it will live on — this one is dim and viewed at a glance,
+# so what reads well in a terminal or a PNG often does not survive here.
+palette: $(BIN) stop
+	@echo "Ctrl-C to stop, then: make install-agent"
+	@./$(BIN) --palette
 
 run: $(BIN) stop
 	open $(BUNDLE)
