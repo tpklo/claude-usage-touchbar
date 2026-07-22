@@ -31,7 +31,11 @@ static NSTouchBarItemIdentifier const kSceneID = @"local.claude-touchbar.scene";
 static NSTouchBarItemIdentifier const kEscID   = @"local.claude-touchbar.esc";
 static NSString *const kScript = @"~/bin/claude-touchbar.sh --raw";
 
-static CGFloat const kSceneW = 560.0;   // fits the app region alongside the Control Strip
+// Measured with `make ruler`, which draws ticks at fixed coordinates: the last
+// legible label is 600, so that is the usable width beside the Control Strip.
+// The window reports 685pt, but part of that is never presented — trusting the
+// window figure clipped the third readout cell clean off.
+static CGFloat const kSceneW = 600.0;
 static CGFloat const kSceneH = 30.0;
 static double  const kFPS    = 15.0;    // both reference pet apps land at 14-18
 
@@ -39,8 +43,10 @@ static double  const kFPS    = 15.0;    // both reference pet apps land at 14-18
 // out side by side so they can be compared at a glance. Earlier versions gave
 // 5h and 7d a row each and demoted the per-model cap to a bare number with no
 // bar, which made the one number you could not compare the odd one out.
-#define READ_X    296.0    // left edge of the readout block
-#define READ_W    258.0    // to x=554, clear of the 560pt right edge
+#define READ_W    300.0
+#define READ_X    (kSceneW - READ_W - 8)   // right-aligned: usage is the thing
+                                           // you look for, so it sits where the
+                                           // eye lands last and stays put
 #define CELL_GAP    9.0
 // 30pt of height only fits two tiers. A third one for the countdown pushed the
 // labels off the top edge, so the countdown rides alongside the first label.
@@ -98,7 +104,7 @@ static int ClipForMood(Mood m) {
 @property (nonatomic) NSTimeInterval clipT, sinceAct;
 @property (nonatomic) CGFloat ballY, ballV;   // juggled ball: height above his head, velocity
 @property (nonatomic) BOOL dragging;
-@property (nonatomic) CGFloat grabDX, dragVX, lastDragX, throwVX;
+@property (nonatomic) CGFloat grabDX, dragVX, lastDragX, throwVX, wiggleT;
 @end
 
 @implementation PetView
@@ -114,6 +120,17 @@ static int ClipForMood(Mood m) {
 }
 
 - (BOOL)isFlipped { return NO; }
+
+// The system resizes this view to whatever the bar actually offers; asking for
+// more just gets clipped. Report the real number instead of guessing.
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    // Warn if a future macOS gives us a different bar than the one this was
+    // sized against, instead of silently drawing off-screen.
+    CGFloat win = self.window ? NSWidth(self.window.frame) : 0;
+    if (win > 0 && kSceneW > win)
+        NSLog(@"claude-touchbar: scene %.0fpt wider than the %.0fpt bar — content will be clipped", kSceneW, win);
+}
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
 
@@ -148,7 +165,9 @@ static int ClipForMood(Mood m) {
     CGFloat nx = tx - self.grabDX;
     self.dragVX = tx - self.lastDragX;   // for the throw
     self.lastDragX = tx;
-    self.x = MAX(20, MIN(nx, NSWidth(self.bounds) - 20));
+    // Same wall the pacing uses: he may not be parked on top of the readout.
+    CGFloat wall = READ_X - (CLAWD_N * 1.95) / 2.0 - 8;
+    self.x = MAX(20, MIN(nx, wall));
     if (fabs(self.dragVX) > 0.5) self.dir = (self.dragVX > 0) ? 1 : -1;
     self.needsDisplay = YES;
 }
@@ -168,8 +187,11 @@ static int ClipForMood(Mood m) {
 - (void)advance:(NSTimeInterval)dt {
     Mood m = MoodForUsage(self.p5);
 
-    if (self.dragging) {          // held: the finger owns his position
-        self.phase += dt * 6.0;
+    if (self.dragging) {
+        // Held: legs scrabble, body shakes. A limp sprite following a finger
+        // reads as a dragged icon; a struggling one reads as a creature.
+        self.phase   += dt * 17.0;
+        self.wiggleT += dt;
         self.needsDisplay = YES;
         return;
     }
@@ -178,7 +200,7 @@ static int ClipForMood(Mood m) {
     if (fabs(self.throwVX) > 1.0) {
         self.x += self.throwVX * dt;
         self.throwVX *= 0.92;
-        CGFloat lo = 20, hi = NSWidth(self.bounds) - 20;
+        CGFloat lo = 20, hi = READ_X - (CLAWD_N * 1.95) / 2.0 - 8;
         if (self.x < lo) { self.x = lo; self.throwVX = -self.throwVX * 0.5; self.dir = 1; }
         if (self.x > hi) { self.x = hi; self.throwVX = -self.throwVX * 0.5; self.dir = -1; }
         self.phase += dt * (fabs(self.throwVX) / 9.0);
@@ -289,8 +311,18 @@ static const unsigned char *WalkFrame(const unsigned char *base, int step) {
 #define CLAWD_BOT 17
 #define CLAWD_ROWS (CLAWD_BOT - CLAWD_TOP + 1)
 
+static void DrawGridLean(const unsigned char *g, NSPoint origin, CGFloat px,
+                         BOOL flip, NSColor *body, CGFloat lean);
+
 static void DrawGrid(const unsigned char *g, NSPoint origin, CGFloat px,
                      BOOL flip, NSColor *body) {
+    DrawGridLean(g, origin, px, flip, body, 0);
+}
+
+// lean shears the sprite: rows further from the feet shift further, so he
+// tilts against the direction he is being pulled instead of sliding rigid.
+static void DrawGridLean(const unsigned char *g, NSPoint origin, CGFloat px,
+                         BOOL flip, NSColor *body, CGFloat lean) {
     NSColor *eye = [NSColor colorWithSRGBRed:0.06 green:0.06 blue:0.06 alpha:1.0];
     for (int r = CLAWD_TOP; r <= CLAWD_BOT; r++) {
         for (int c = 0; c < CLAWD_N; c++) {
@@ -298,8 +330,9 @@ static void DrawGrid(const unsigned char *g, NSPoint origin, CGFloat px,
             if (!v) continue;
             [(v == 2 ? eye : body) set];
             int cx = flip ? (CLAWD_N - 1 - c) : c;
-            NSRectFill(NSMakeRect(origin.x + (cx - CLAWD_N / 2.0) * px,
-                                  origin.y + (CLAWD_BOT - r) * px,
+            CGFloat rowUp = (CLAWD_BOT - r);          // 0 at the feet
+            NSRectFill(NSMakeRect(origin.x + (cx - CLAWD_N / 2.0) * px + lean * rowUp,
+                                  origin.y + rowUp * px,
                                   px + 0.4, px + 0.4));
         }
     }
@@ -325,9 +358,13 @@ static void DrawGrid(const unsigned char *g, NSPoint origin, CGFloat px,
         ? [NSColor colorWithSRGBRed:0.86 green:0.30 blue:0.22 alpha:1.0]
         : [NSColor colorWithSRGBRed:0.804 green:0.498 blue:0.416 alpha:1.0];  // #CD7F6A — official, from creature-engine.js
 
-    CGFloat const px = 1.95;                      // 15 drawn rows * 1.95 = 29pt of the 30pt bar
-    CGFloat bob = (mood == MoodTired) ? 0 : (((int)(self.phase * 2.0) & 1) ? 0.9 : 0);
-    NSPoint feet = NSMakePoint(self.x, midY - (CLAWD_ROWS * px) / 2.0 + bob);
+    // 15 rows at 1.95 filled 29.2 of the 30pt bar, leaving 0.8pt of margin —
+    // less than the bob, so his head clipped, and the sweat drawn above it was
+    // off-screen entirely. 1.72 keeps him large while leaving room to move.
+    CGFloat const px = 1.72;
+    CGFloat bob = (mood == MoodTired) ? 0 : (((int)(self.phase * 2.0) & 1) ? 0.7 : 0);
+    // Sit him slightly low: the space above his head is where the sweat goes.
+    NSPoint feet = NSMakePoint(self.x, 2.2 + bob);   // 2.2 clears the ground line at feet.y-1.5
 
     // Ground line, like the reference art.
     [[NSColor colorWithWhite:1.0 alpha:0.14] set];
@@ -343,7 +380,35 @@ static void DrawGrid(const unsigned char *g, NSPoint origin, CGFloat px,
     }
 
     const unsigned char *base = kClawdClips[0].frames[0].grid;   // canonical pose
-    if (self.act == ActWalk) {
+
+    if (self.dragging) {
+        // Startled, not malfunctioning: a fast wobble with a slow sway under
+        // it, so the motion has a shape instead of reading as vibration.
+        CGFloat t = self.wiggleT;
+        CGFloat jx = sin(t * 16.0) * 1.3 + sin(t * 6.0) * 0.6;
+        CGFloat jy = sin(t * 13.0) * 1.5 + cos(t * 21.0) * 0.5;
+        CGFloat lean = MAX(-0.35, MIN(0.35, -self.dragVX * 0.04));
+        NSPoint p = NSMakePoint(feet.x + jx, feet.y + jy);
+        DrawGridLean(WalkFrame(base, (int)(self.phase * 2.0)), p, px,
+                     (self.dir < 0), body, lean);
+
+        // Sweat: three drops on staggered cycles, each arcing up and out from
+        // the head and fading. Position comes from the clock, so no particle
+        // state has to be kept anywhere.
+        CGFloat headY = p.y + CLAWD_ROWS * px;
+        for (int i = 0; i < 3; i++) {
+            CGFloat prog = fmod(t * 1.6 + i * 0.37, 1.0);       // 0..1 per drop
+            if (prog > 0.85) continue;                          // brief gap
+            CGFloat side = (i == 1) ? -1.0 : 1.0;
+            CGFloat dx = side * (5.0 + prog * 13.0) + ((i == 2) ? 3.0 : 0);
+            CGFloat dy = sin(prog * M_PI) * 7.0 - prog * 2.0;   // arc up, then fall
+            CGFloat fade = MIN(1.0, (1.0 - prog) * 1.6);   // stay opaque until well clear
+            [[NSColor colorWithSRGBRed:0.42 green:0.72 blue:0.96
+                                  alpha:0.95 * fade] set];
+            CGFloat sz = 2.6 * (1.0 - prog * 0.3);
+            NSRectFill(NSMakeRect(p.x + dx, headY + dy - 2, sz, sz * 1.35));
+        }
+    } else if (self.act == ActWalk) {
         DrawGrid(WalkFrame(base, (int)(self.phase * 2.0)), feet, px, (self.dir < 0), body);
     } else if (self.act == ActJuggle) {
         DrawGrid(base, feet, px, (self.dir < 0), body);
@@ -496,6 +561,17 @@ static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *a
 @interface PaletteView : NSView
 @end
 
+// `--ruler`: how much width does the system actually give us? Ask for far more
+// than we think we have and read the answer off the bar.
+@interface RulerView : NSView
+@end
+
+// `--sweat`: four sweat treatments animating side by side on the real panel.
+// Sweat is motion, so a still render cannot settle it — and neither can I,
+// since the bar cannot be screenshotted.
+@interface SweatView : NSView
+@property (nonatomic) NSTimeInterval t;
+@end
 @implementation PaletteView
 - (BOOL)isFlipped { return NO; }
 - (void)drawRect:(NSRect)dirty {
@@ -552,8 +628,93 @@ static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *a
 }
 @end
 
+@implementation SweatView
+- (BOOL)isFlipped { return NO; }
+- (instancetype)initWithFrame:(NSRect)f {
+    if ((self = [super initWithFrame:f])) {
+        [NSTimer scheduledTimerWithTimeInterval:1.0/15.0 repeats:YES block:^(NSTimer *tm) {
+            self.t += 1.0/15.0; self.needsDisplay = YES;
+        }];
+    }
+    return self;
+}
+// A pixel teardrop: narrow at the top, widest just below centre, rounded off.
+// Two flat rectangles read as a blob; the silhouette is what makes it water.
+static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat alpha) {
+    [[c colorWithAlphaComponent:alpha] set];
+    CGFloat u = scale;
+    NSRectFill(NSMakeRect(x + u * 0.9, y + u * 3.4, u * 1.0, u * 1.1));   // tip
+    NSRectFill(NSMakeRect(x + u * 0.5, y + u * 2.3, u * 1.8, u * 1.2));
+    NSRectFill(NSMakeRect(x,           y + u * 0.9, u * 2.8, u * 1.5));   // belly
+    NSRectFill(NSMakeRect(x + u * 0.4, y,           u * 2.0, u * 1.0));   // base
+    [[NSColor colorWithWhite:1.0 alpha:alpha * 0.55] set];
+    NSRectFill(NSMakeRect(x + u * 0.55, y + u * 1.7, u * 0.7, u * 0.9));  // highlight
+}
+
+- (void)drawRect:(NSRect)d {
+    [NSColor.clearColor set]; NSRectFill(d);
+    NSColor *body = [NSColor colorWithSRGBRed:0.804 green:0.498 blue:0.416 alpha:1.0];
+    NSColor *drop = [NSColor colorWithSRGBRed:0.45 green:0.76 blue:0.98 alpha:1.0];
+    NSDictionary *lb = @{ NSFontAttributeName: [NSFont systemFontOfSize:9 weight:NSFontWeightBold],
+                          NSForegroundColorAttributeName: [NSColor colorWithWhite:1 alpha:0.8] };
+    const unsigned char *base = kClawdClips[0].frames[0].grid;
+    CGFloat px = 1.95, t = self.t;
+    CGFloat w = NSWidth(self.bounds) / 4.0;
+
+    for (int v = 0; v < 4; v++) {
+        CGFloat cx = v * w + w * 0.45;
+        [[NSString stringWithFormat:@"%c", 'A' + v] drawAtPoint:NSMakePoint(v * w + 6, 16) withAttributes:lb];
+
+        CGFloat jx = sin(t * 16.0) * 1.3 + sin(t * 6.0) * 0.6;
+        CGFloat jy = sin(t * 13.0) * 1.5 + cos(t * 21.0) * 0.5;
+        NSPoint p = NSMakePoint(cx + jx, 2 + jy);
+        DrawGridLean(WalkFrame(base, (int)(t * 34.0)), p, px, NO, body, 0.15);
+        CGFloat hy = p.y + CLAWD_ROWS * px;
+
+        if (v == 0) {          // A: หยดเดียว ค้างข้างหัว ทรงหยดน้ำ สั่นตามตัว
+            DrawDrop(p.x + 10, hy - 5, 1.5, drop, 0.95);
+        } else if (v == 1) {   // B: หยดค้าง + ไหลลงช้าๆ แล้ววนใหม่
+            CGFloat pr = fmod(t * 0.55, 1.0);
+            DrawDrop(p.x + 10, hy - 3 - pr * 11, 1.5, drop, pr > 0.75 ? (1 - pr) * 4 : 0.95);
+        } else if (v == 2) {   // C: หยดใหญ่ค้าง + หยดเล็กกระเด็นอีกฝั่ง
+            DrawDrop(p.x + 10, hy - 4, 1.8, drop, 0.95);
+            for (int i = 0; i < 2; i++) {
+                CGFloat pr = fmod(t * 1.7 + i * 0.5, 1.0);
+                if (pr > 0.7) continue;
+                DrawDrop(p.x - 12 - pr * 7, hy - 1 + pr * 4, 0.9, drop, 0.9 * (1 - pr / 0.7));
+            }
+        } else {               // D: 2 หยดคนละข้าง สั่นคนละจังหวะ
+            DrawDrop(p.x + 10, hy - 4 + sin(t * 11.0) * 0.8, 1.5, drop, 0.95);
+            DrawDrop(p.x - 13, hy - 6 + sin(t * 9.0 + 1.7) * 0.8, 1.2, drop, 0.9);
+        }
+    }
+}
+@end
+
+@implementation RulerView
+- (BOOL)isFlipped { return NO; }
+- (void)drawRect:(NSRect)d {
+    [NSColor.clearColor set]; NSRectFill(d);
+    NSDictionary *a = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:10
+                                                                              weight:NSFontWeightBold],
+                         NSForegroundColorAttributeName: NSColor.whiteColor };
+    // Ticks at fixed coordinates only. An earlier version drew a marker at
+    // NSWidth(bounds)-6, which sits at the view's own edge no matter how wide
+    // the view is — it always looked like the full width had been granted.
+    for (int x = 0; x <= 900; x += 25) {
+        BOOL hundred = (x % 100 == 0), fifty = (x % 50 == 0);
+        [[NSColor colorWithWhite:1.0 alpha:hundred ? 1.0 : (fifty ? 0.6 : 0.3)] set];
+        NSRectFill(NSMakeRect(x, 0, hundred ? 2 : 1, hundred ? 12 : (fifty ? 7 : 4)));
+        if (hundred && x > 0)
+            [[NSString stringWithFormat:@"%d", x] drawAtPoint:NSMakePoint(x + 3, 14) withAttributes:a];
+    }
+}
+@end
+
 @interface AppDelegate : NSObject <NSApplicationDelegate, NSTouchBarDelegate>
 @property (nonatomic) BOOL paletteMode;
+@property (nonatomic) BOOL rulerMode;
+@property (nonatomic) BOOL sweatMode;
 @property (nonatomic, strong) NSTouchBar *bar;
 @property (nonatomic, strong) PetView *pet;
 @property (nonatomic, strong) NSTimer *frameTimer;
@@ -576,16 +737,15 @@ static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *a
         return;
     }
 
-    NSLog(@"SPIKE ready — NSLog works, waiting for touches");
     DFRSystemModalShowsCloseBoxWhenFrontMost(NO);
 
-    if (self.paletteMode) {
+    if (self.paletteMode || self.rulerMode || self.sweatMode) {
         self.bar = [NSTouchBar new];
         self.bar.delegate = self;
         self.bar.defaultItemIdentifiers = @[kSceneID];
         self.bar.escapeKeyReplacementItemIdentifier = kEscID;
         [self present];
-        NSLog(@"palette mode — ปิดด้วย Ctrl-C");
+        NSLog(@"palette mode — press Ctrl-C to exit");
         return;
     }
 
@@ -636,9 +796,14 @@ static void DrawRight(NSString *s, CGFloat rightEdge, CGFloat y, NSDictionary *a
                 makeItemForIdentifier:(NSTouchBarItemIdentifier)identifier {
     if ([identifier isEqualToString:kSceneID]) {
         NSCustomTouchBarItem *it = [[NSCustomTouchBarItem alloc] initWithIdentifier:identifier];
-        it.view = self.paletteMode
-            ? [[PaletteView alloc] initWithFrame:NSMakeRect(0, 0, kSceneW, kSceneH)]
-            : (NSView *)self.pet;
+        if (self.sweatMode)
+            it.view = [[SweatView alloc] initWithFrame:NSMakeRect(0, 0, kSceneW, kSceneH)];
+        else if (self.rulerMode)
+            it.view = [[RulerView alloc] initWithFrame:NSMakeRect(0, 0, 900, kSceneH)];
+        else if (self.paletteMode)
+            it.view = [[PaletteView alloc] initWithFrame:NSMakeRect(0, 0, kSceneW, kSceneH)];
+        else
+            it.view = self.pet;
         return it;
     }
     if ([identifier isEqualToString:kEscID]) {
@@ -786,6 +951,8 @@ int main(int argc, const char **argv) {
         NSApplication *app = NSApplication.sharedApplication;
         AppDelegate *d = [AppDelegate new];
         d.paletteMode = (argc == 2 && strcmp(argv[1], "--palette") == 0);
+        d.rulerMode  = (argc == 2 && strcmp(argv[1], "--ruler") == 0);
+        d.sweatMode  = (argc == 2 && strcmp(argv[1], "--sweat") == 0);
         app.delegate = d;
         [app run];
     }
