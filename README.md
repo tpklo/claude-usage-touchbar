@@ -40,9 +40,12 @@ Every Touch Bar utility does this — MTMR, Pock, BetterTouchTool. The practical
 consequences: it can never ship on the App Store, and a future macOS could
 break it (the app exits cleanly if the API disappears rather than crashing).
 
-**It asks for no permissions at all** — no Accessibility, no Full Disk Access,
-no TCC prompt of any kind. If macOS ever asks you for something while running
-this, treat that as a bug and file an issue.
+**It asks for no permissions to show you your usage** — no Full Disk Access, no
+Screen Recording, nothing. One exception: the replacement Escape key posts a
+synthetic key event through `CGEventPost`, which is what the Accessibility
+permission governs. It has not prompted on the machine this was built on, but
+if a dialog does appear it will be Accessibility, it will be the Escape button
+that caused it, and declining costs you only that button.
 
 See [SECURITY.md](SECURITY.md) for exactly where the token goes.
 
