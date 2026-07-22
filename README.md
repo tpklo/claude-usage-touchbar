@@ -128,12 +128,28 @@ apart and happily displayed three-hour-old numbers as though they were live.
 
 ```bash
 make            # build the .app
-make assets     # re-extract artwork
-make test       # parser checks — no network, no keychain, no artwork
+make assets     # re-fetch Clawd's poses
+make test       # parser checks — no network, no keychain, no poses needed
 make run        # build, restart, launch
 make stop
 make clean
 ```
+
+The Touch Bar cannot be screenshotted, so several targets exist to look at work
+that would otherwise be invisible:
+
+```bash
+make shots      # readout across eight data states -> PNGs
+make poses      # all thirteen animation clips, mid-frame -> PNGs
+make palette    # candidate colours side by side, on the bar itself
+make ruler      # fixed ticks, to read the usable width off the bar
+make sweat      # the drag reaction, held on screen
+```
+
+`palette` and `ruler` matter more than they sound. Colours picked from a PNG
+were rejected three times running before the same choice made on the panel
+landed in one; and the bar's usable width came out as three different numbers
+depending on how it was measured, with only the ruler telling the truth.
 
 Single Objective-C file, no dependencies, no package manager. The script needs
 only `/usr/bin/python3`, which ships with the Command Line Tools the build

@@ -11,7 +11,7 @@ FLAGS := -fobjc-arc -O2 -Wall \
 AGENT := local.claude-touchbar
 PLIST := $(HOME)/Library/LaunchAgents/$(AGENT).plist
 
-.PHONY: all assets test palette install-script install-agent uninstall-agent run stop clean missing-assets
+.PHONY: all assets test shots poses palette ruler sweat install-script install-agent uninstall-agent run stop clean missing-assets
 
 all: $(BIN)
 
@@ -90,6 +90,21 @@ uninstall-agent:
 palette: $(BIN) stop
 	@echo "Ctrl-C to stop, then: make install-agent"
 	@./$(BIN) --palette
+
+# Dev tools for checking work that cannot be screenshotted.
+#   shots   readout across eight data states -> PNG
+#   poses   every animation clip mid-frame -> PNG
+#   palette candidate colours side by side, on the bar itself
+#   ruler   fixed ticks, to read the usable width off the bar
+poses: $(BIN)
+	@./$(BIN) --poses /tmp/claude-touchbar-poses
+	@open /tmp/claude-touchbar-poses
+
+ruler: $(BIN)
+	@echo "Ctrl-C to exit"; ./$(BIN) --ruler
+
+sweat: $(BIN)
+	@echo "Ctrl-C to exit"; ./$(BIN) --sweat
 
 run: $(BIN) stop
 	open $(BUNDLE)

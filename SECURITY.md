@@ -102,9 +102,32 @@ The call is guarded with `respondsToSelector:`; if a future macOS removes it,
 the app logs and exits instead of crashing. This is also why the app can never
 be distributed through the App Store.
 
-No entitlements are requested. Ad-hoc signing is sufficient. No TCC permission
-is required — not Accessibility, not Full Disk Access, nothing. **If macOS
-prompts you for a permission while running this, that is a bug: file an issue.**
+No entitlements are requested and ad-hoc signing is sufficient. Nothing here
+needs Full Disk Access, Screen Recording, or any other TCC permission — with
+one exception you should know about before you install it.
+
+## The Escape key, and the one permission that may be asked for
+
+Presenting a Touch Bar covers the system Escape key, so the app draws a
+replacement. Pressing it synthesises a real key event:
+
+```objc
+CGEventPost(kCGHIDEventTap, CGEventCreateKeyboardEvent(NULL, 53, true));
+```
+
+**Posting synthetic key events is exactly what the Accessibility permission
+governs.** On this machine the button works and macOS has not asked, but that
+may be because of how the event is routed on a Touch Bar rather than a general
+rule, and the behaviour has changed between macOS releases before. Treat it as:
+if a permission dialog appears, it will be *Accessibility*, it will be caused by
+pressing the Escape button, and declining it costs you only that button — the
+usage readout does not depend on it.
+
+An earlier version of this file claimed no permission could ever be requested.
+That claim was written from intent rather than from reading this code path, and
+it was the kind of unverified reassurance a security document should never
+contain. If you find any other statement here that the source does not support,
+please open an issue.
 
 ## Reporting
 
