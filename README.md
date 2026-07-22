@@ -3,10 +3,10 @@
 Your live Claude usage on the MacBook Pro Touch Bar, with a small pixel
 creature pacing along beside it.
 
-```
-🦀      5h ████▏┊    ┊   26%  2h05
-        7d ██████████▏   91%  !
-```
+![Clawd being dragged along the Touch Bar](docs/demo.gif)
+
+*Recorded with `make film-drag` — the widget's own animation loop, rendered
+headless. No screen was filmed.*
 
 The bars show the 5-hour and 7-day utilisation reported by Anthropic's own
 usage endpoint — the same numbers `/usage` prints in Claude Code. Tick marks
@@ -92,9 +92,11 @@ Clawd is Anthropic's mascot; the name and the character are theirs. The pose
 library at [claudepix.vercel.app](https://claudepix.vercel.app) publishes no
 licence, which means all rights reserved.
 
-So none of it is redistributed here. `make assets` fetches the pose grids at
-build time and writes them to `clawd_presets.h` on your machine. This
-repository contains only code.
+So the pose data is not redistributed here. `make assets` fetches the pose
+grids at build time and writes them to `clawd_presets.h` on your machine.
+Nothing you can build a pose library from is in this repository — the demo
+recording at the top is a screenshot of the running widget, the same as any
+project showing its own UI.
 
 ## Run it at login
 
