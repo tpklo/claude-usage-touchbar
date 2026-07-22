@@ -11,7 +11,7 @@ FLAGS := -fobjc-arc -O2 -Wall \
 AGENT := local.claude-touchbar
 PLIST := $(HOME)/Library/LaunchAgents/$(AGENT).plist
 
-.PHONY: all assets test shots poses palette ruler sweat install-script install-agent uninstall-agent run stop clean missing-assets
+.PHONY: all assets test shots poses palette ruler sweat film film-drag install-script install-agent uninstall-agent run stop clean missing-assets
 
 all: $(BIN)
 
@@ -105,6 +105,25 @@ ruler: $(BIN)
 
 sweat: $(BIN)
 	@echo "Ctrl-C to exit"; ./$(BIN) --sweat
+
+# Record the widget without filming a screen: runs the real animation loop
+# headless and writes one PNG per frame. film-drag scripts a grab-drag-throw so
+# the touch reaction can be recorded too — it applies the same wall the touch
+# handler does, after an earlier version moved him straight over the readout.
+FILM_DIR := /tmp/claude-touchbar-film
+film: $(BIN)
+	@rm -rf $(FILM_DIR) && ./$(BIN) --film $(FILM_DIR) 20
+	@command -v ffmpeg >/dev/null && cd $(FILM_DIR) && \
+	  ffmpeg -y -loglevel error -framerate 15 -i f%04d.png \
+	    -vf "scale=iw*2:ih*2:flags=neighbor,split[a][b];[a]palettegen=max_colors=64[p];[b][p]paletteuse=dither=none" \
+	    -loop 0 clawd.gif && echo "$(FILM_DIR)/clawd.gif" || echo "frames in $(FILM_DIR) (brew install ffmpeg for a gif)"
+
+film-drag: $(BIN)
+	@rm -rf $(FILM_DIR)-drag && ./$(BIN) --film-drag $(FILM_DIR)-drag
+	@command -v ffmpeg >/dev/null && cd $(FILM_DIR)-drag && \
+	  ffmpeg -y -loglevel error -framerate 15 -i f%04d.png \
+	    -vf "scale=iw*2:ih*2:flags=neighbor,split[a][b];[a]palettegen=max_colors=64[p];[b][p]paletteuse=dither=none" \
+	    -loop 0 drag.gif && echo "$(FILM_DIR)-drag/drag.gif" || echo "frames in $(FILM_DIR)-drag"
 
 run: $(BIN) stop
 	open $(BUNDLE)

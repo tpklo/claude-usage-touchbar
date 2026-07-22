@@ -1018,6 +1018,88 @@ static int RenderStates(NSString *dir) {
 
 // `--poses <dir>`: one PNG per clip, mid-animation, so a new pose can be
 // checked for clipping and palette errors without waiting for it to appear.
+// `--film <dir> <seconds>`: run the real animation loop headless and write one
+// PNG per frame, so the widget can be turned into a GIF without filming a
+// screen. Uses the same advance:/drawRect: path as the live app.
+static int RenderFilm(NSString *dir, double secs) {
+    [NSFileManager.defaultManager createDirectoryAtPath:dir
+                            withIntermediateDirectories:YES attributes:nil error:nil];
+    PetView *v = [[PetView alloc] initWithFrame:NSMakeRect(0, 0, kSceneW, kSceneH)];
+    v.p5 = 62; v.p7 = 61; v.resetMin = 93; v.scopedPct = 61; v.scopedName = @"Fable";
+    v.state = @"ok"; v.haveData = YES; v.x = 60;
+
+    int n = (int)(secs * kFPS);
+    for (int i = 0; i < n; i++) {
+        [v advance:1.0 / kFPS];
+        NSImage *layer = [[NSImage alloc] initWithSize:v.bounds.size];
+        [layer lockFocus]; [v drawRect:v.bounds]; [layer unlockFocus];
+        NSImage *img = [[NSImage alloc] initWithSize:v.bounds.size];
+        [img lockFocus];
+        [NSColor.blackColor set]; NSRectFill(v.bounds);
+        [layer drawInRect:v.bounds fromRect:NSZeroRect
+                operation:NSCompositingOperationSourceOver fraction:1.0];
+        [img unlockFocus];
+        NSBitmapImageRep *out = [[NSBitmapImageRep alloc] initWithData:img.TIFFRepresentation];
+        [[out representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+            writeToFile:[dir stringByAppendingPathComponent:
+                         [NSString stringWithFormat:@"f%04d.png", i]] atomically:YES];
+    }
+    printf("%d frames at %.0f fps -> %s\n", n, kFPS, dir.UTF8String);
+    return 0;
+}
+
+// `--film-drag <dir>`: scripted sequence — pacing, then grabbed and dragged,
+// then thrown. Drives the same state the touch handlers set, so what it records
+// is the real reaction rather than a re-creation of it.
+static int RenderFilmDrag(NSString *dir) {
+    [NSFileManager.defaultManager createDirectoryAtPath:dir
+                            withIntermediateDirectories:YES attributes:nil error:nil];
+    PetView *v = [[PetView alloc] initWithFrame:NSMakeRect(0, 0, kSceneW, kSceneH)];
+    v.p5 = 62; v.p7 = 61; v.resetMin = 93; v.scopedPct = 61; v.scopedName = @"Fable";
+    v.state = @"ok"; v.haveData = YES; v.x = 90; v.dir = 1;
+
+    double dt = 1.0 / kFPS;
+    __block int i = 0;
+    void (^shoot)(void) = ^{
+        NSImage *layer = [[NSImage alloc] initWithSize:v.bounds.size];
+        [layer lockFocus]; [v drawRect:v.bounds]; [layer unlockFocus];
+        NSImage *img = [[NSImage alloc] initWithSize:v.bounds.size];
+        [img lockFocus];
+        [NSColor.blackColor set]; NSRectFill(v.bounds);
+        [layer drawInRect:v.bounds fromRect:NSZeroRect
+                operation:NSCompositingOperationSourceOver fraction:1.0];
+        [img unlockFocus];
+        NSBitmapImageRep *o = [[NSBitmapImageRep alloc] initWithData:img.TIFFRepresentation];
+        [[o representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+            writeToFile:[dir stringByAppendingPathComponent:
+                         [NSString stringWithFormat:@"f%04d.png", i++]] atomically:YES];
+    };
+
+    for (int f = 0; f < 30; f++) { [v advance:dt]; shoot(); }      // pacing, 2s
+
+    v.dragging = YES; v.grabDX = 0; v.act = ActClip; v.clipIdx = 4;
+    v.clip = 0; v.clipT = 0; v.clipLoops = 3;
+    // Same wall the real handler applies — an earlier version of this recorder
+    // moved x directly and produced footage of him standing on the readout,
+    // which the app itself does not allow.
+    CGFloat wall = READ_X - (CLAWD_N * 1.95) / 2.0 - 8;
+    CGFloat path[] = {150, 200, 245, 262, 240, 200, 150, 100, 60, 30, 70, 130, 190, 250};
+    for (int p = 0; p < (int)(sizeof(path)/sizeof(CGFloat)); p++) {
+        for (int f = 0; f < 4; f++) {                              // ~4s held
+            v.dragVX = (path[p] - v.x) / 4.0;
+            v.x = MAX(20, MIN(v.x + v.dragVX, wall));
+            v.lastDragX = v.x;
+            if (fabs(v.dragVX) > 0.5) v.dir = (v.dragVX > 0) ? 1 : -1;
+            [v advance:dt]; shoot();
+        }
+    }
+    [v releaseDrag];                                                // thrown
+    for (int f = 0; f < 60; f++) { [v advance:dt]; shoot(); }       // slide + settle, 4s
+
+    printf("%d frames -> %s\n", i, dir.UTF8String);
+    return 0;
+}
+
 static int RenderPoses(NSString *dir) {
     [NSFileManager.defaultManager createDirectoryAtPath:dir
                             withIntermediateDirectories:YES attributes:nil error:nil];
@@ -1046,6 +1128,14 @@ static int RenderPoses(NSString *dir) {
 
 int main(int argc, const char **argv) {
     @autoreleasepool {
+        if (argc == 3 && strcmp(argv[1], "--film-drag") == 0) {
+            [NSApplication sharedApplication];
+            return RenderFilmDrag(@(argv[2]));
+        }
+        if (argc == 4 && strcmp(argv[1], "--film") == 0) {
+            [NSApplication sharedApplication];
+            return RenderFilm(@(argv[2]), atof(argv[3]));
+        }
         if (argc == 3 && strcmp(argv[1], "--poses") == 0) {
             [NSApplication sharedApplication];
             return RenderPoses(@(argv[2]));

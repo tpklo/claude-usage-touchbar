@@ -144,6 +144,8 @@ make poses      # all thirteen animation clips, mid-frame -> PNGs
 make palette    # candidate colours side by side, on the bar itself
 make ruler      # fixed ticks, to read the usable width off the bar
 make sweat      # the drag reaction, held on screen
+make film       # 20s of the real animation loop -> PNGs (+ gif if ffmpeg)
+make film-drag  # scripted grab, drag and throw -> PNGs (+ gif)
 ```
 
 `palette` and `ruler` matter more than they sound. Colours picked from a PNG
