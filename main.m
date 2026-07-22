@@ -83,16 +83,27 @@ typedef NS_ENUM(NSInteger, Act) { ActWalk, ActClip, ActJuggle };
 
 // Which official clip suits each mood. Indices follow kClawdClips order:
 // 0 breathe 1 blink 2 look_around 3 wink 4 surprise 5 sleep 6 bounce 7 sway 8 think
-static int ClipForMood(Mood m) {
+// Pools per mood, with the previous pick excluded so the same clip never runs
+// twice in a row. Panic used to be a single clip on a short cycle, which is the
+// worst case: at high usage you see one animation on repeat.
+static int ClipForMood(Mood m, int previous) {
+    static const int calm[]  = {0,1,2,9,3};        // idle, laptop, wink
+    static const int brisk[] = {6,7,3,10,11,12,2}; // dancing + DJ + a glance
+    static const int tired[] = {8,5,9,0,1};        // thinking, sleeping, breathing
+    static const int panic[] = {4,6,10,12,7};      // startled, then frantic motion
+
+    const int *pool; int n;
     switch (m) {
-        // Calm: idling, plus the laptop scene — nothing much is being spent.
-        case MoodCalm:  { int c[] = {0,1,2,9};       return c[arc4random_uniform(4)]; }
-        // Brisk: dancing, including the three DJ variants.
-        case MoodBrisk: { int c[] = {6,7,3,10,11,12}; return c[arc4random_uniform(6)]; }
-        // Tired: thinking hard, or asleep.
-        case MoodTired: { int c[] = {8,5,9};         return c[arc4random_uniform(3)]; }
-        case MoodPanic: return 4;   // surprise
+        case MoodCalm:  pool = calm;  n = sizeof(calm)  / sizeof(int); break;
+        case MoodBrisk: pool = brisk; n = sizeof(brisk) / sizeof(int); break;
+        case MoodTired: pool = tired; n = sizeof(tired) / sizeof(int); break;
+        default:        pool = panic; n = sizeof(panic) / sizeof(int); break;
     }
+    for (int tries = 0; tries < 8; tries++) {
+        int pick = pool[arc4random_uniform(n)];
+        if (pick != previous) return pick;
+    }
+    return pool[0];
 }
 
 @interface PetView : NSView
@@ -108,6 +119,8 @@ static int ClipForMood(Mood m) {
 @property (nonatomic) CGFloat ballY, ballV;   // juggled ball: height above his head, velocity
 @property (nonatomic) BOOL dragging;
 @property (nonatomic) CGFloat grabDX, dragVX, lastDragX, throwVX, wiggleT;
+@property (nonatomic) CGFloat nextActAt;
+@property (nonatomic) NSInteger lastClipIdx, clipLoops;
 @end
 
 @implementation PetView
@@ -116,6 +129,8 @@ static int ClipForMood(Mood m) {
     if ((self = [super initWithFrame:f])) {
         _x = 40; _dir = 1; _p5 = 0; _p7 = 0; _resetMin = -1;
         _act = ActWalk;
+        _nextActAt = 4.0;
+        _lastClipIdx = -1;
         // Without this the view gets direct touches only intermittently.
         self.allowedTouchTypes = NSTouchTypeMaskDirect;
     }
@@ -155,7 +170,7 @@ static int ClipForMood(Mood m) {
         self.lastDragX = tx;
         self.act = ActClip;              // stop pacing while held
         self.clipIdx = 4;                // surprise
-        self.clip = 0; self.clipT = 0;
+        self.clip = 0; self.clipT = 0; self.clipLoops = 2;
     }
 }
 
@@ -225,16 +240,25 @@ static int ClipForMood(Mood m) {
 
         // Every so often, stop and do something. Panicking Clawd has no time
         // for hobbies, so the pause only happens when things are calm.
+        // A fixed 12s gap put him on a metronome and left three quarters of
+        // every cycle as plain pacing. The wait is now short and irregular, so
+        // the next thing he does is neither far off nor predictable.
         self.sinceAct += dt;
-        if (self.sinceAct > 12.0 && m != MoodPanic) {
+        if (self.sinceAct > self.nextActAt) {
             self.sinceAct = 0;
+            self.nextActAt = 3.0 + (CGFloat)arc4random_uniform(500) / 100.0;   // 3-8s
             self.clip = 0;
             self.clipT = 0;
-            if (arc4random_uniform(4) == 0) {          // 1 ใน 4 = เดาะบอล
+            if (m != MoodPanic && arc4random_uniform(5) == 0) {   // เดาะบอลเฉพาะตอนไม่ตกใจ
                 self.act = ActJuggle; self.ballY = 0; self.ballV = 46;
             } else {
                 self.act = ActClip;
-                self.clipIdx = ClipForMood(m);
+                self.clipIdx = ClipForMood(m, (int)self.lastClipIdx);
+                self.lastClipIdx = self.clipIdx;
+                const ClawdClip *pick = &kClawdClips[self.clipIdx];
+                int ms = 0;
+                for (int f = 0; f < pick->count; f++) ms += pick->frames[f].hold;
+                self.clipLoops = MAX(1, MIN(3, 4000 / MAX(ms, 1)));
             }
         }
     } else if (self.act == ActJuggle) {
@@ -259,7 +283,17 @@ static int ClipForMood(Mood m) {
             self.clipT -= cl->frames[self.clip].hold;
             self.clip++;
         }
-        if (self.clip >= cl->count) { self.act = ActWalk; self.clip = 0; self.sinceAct = 0; }
+        if (self.clip >= cl->count) {
+            // The dance clips run 1.4-2.4s and are built to loop, so playing
+            // each exactly once sent him straight back to pacing — the busiest
+            // moods ended up the least animated. Short clips repeat until they
+            // have held the screen for a few seconds.
+            if (--self.clipLoops > 0) {
+                self.clip = 0;
+            } else {
+                self.act = ActWalk; self.clip = 0; self.sinceAct = 0;
+            }
+        }
     }
 
     self.needsDisplay = YES;
