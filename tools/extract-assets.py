@@ -27,6 +27,9 @@ PRESETS = [
     "idle_breathe", "idle_blink", "idle_look_around",
     "expression_wink", "expression_surprise", "expression_sleep",
     "dance_bounce", "dance_sway", "work_think",
+    # Appended 2026-07-22 — the remaining four on claudepix. New entries go on
+    # the end for the reason above: main.m addresses these by index.
+    "work_coding", "dance_bounce_dj", "dance_sway_dj", "dance_djmix",
 ]
 
 # Each preset page builds its frames by calling the engine's patch()/shift()
@@ -51,12 +54,25 @@ const html = require('fs').readFileSync(page, 'utf8');
 const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 (0, eval)(scripts.join('\n'));
 
+// Two page formats exist. The older ones export window.PRESET and lean on the
+// shared PixelEngine (values are 0/1/2 — empty, body, eye). The newer ones are
+// standalone: window.FRAMES plus their own window.PAL of up to ten colours, for
+// scenes with props like a laptop or desk.
 const P = globalThis.PRESET;
-if (!P) { console.error('no PRESET'); process.exit(1); }
-const base = globalThis.PixelEngine.CREATURE;
-process.stdout.write(JSON.stringify({
-  frames: P.frames.map(f => ({ hold: f.hold, grid: f.frame || base })),
-}));
+if (P) {
+  const base = globalThis.PixelEngine.CREATURE;
+  process.stdout.write(JSON.stringify({
+    palette: null,
+    frames: P.frames.map(f => ({ hold: f.hold, grid: f.frame || base })),
+  }));
+} else if (globalThis.FRAMES) {
+  process.stdout.write(JSON.stringify({
+    palette: globalThis.PAL || null,
+    frames: globalThis.FRAMES.map(f => ({ hold: f.hold, grid: f.frame })),
+  }));
+} else {
+  console.error('neither PRESET nor FRAMES'); process.exit(1);
+}
 """
 
 
@@ -106,7 +122,12 @@ def main():
             if not frames:
                 print(f"  ! {name}: no usable frames (page format may have changed)")
                 continue
-            clips.append((name, frames))
+            # Vertical extent across every frame of the clip. The creature-only
+            # poses occupy rows 4-16; the prop scenes reach 0-18, and drawing
+            # them at the creature's row window silently cropped desks and
+            # headphones. Each clip carries its own window instead.
+            rows = [r for _, g in frames for r in range(20) if any(g[r])]
+            clips.append((name, frames, data.get("palette"), min(rows), max(rows)))
             print(f"  {name:22} {len(frames):3d} frames")
 
     if not clips:
@@ -117,16 +138,33 @@ def main():
         fh.write("// Pose data from https://claudepix.vercel.app (Clawd is Anthropic's).\n")
         fh.write("#pragma once\n#define CLAWD_N 20\n\n")
         fh.write("typedef struct { int hold; unsigned char grid[CLAWD_N*CLAWD_N]; } ClawdFrame;\n")
-        fh.write("typedef struct { const char *name; int count; const ClawdFrame *frames; } ClawdClip;\n\n")
-        for name, frames in clips:
+        fh.write("typedef struct { const char *name; int count; const ClawdFrame *frames;\n"
+                 "                 const unsigned char (*pal)[3]; int palCount;\n"
+                 "                 int top, bot; } ClawdClip;\n\n")
+        for name, frames, pal, top, bot in clips:
             fh.write(f"static const ClawdFrame kF_{name}[] = {{\n")
             for hold, rows in frames:
                 flat = ",".join(str(v) for r in rows for v in r)
                 fh.write(f"  {{{hold}, {{{flat}}}}},\n")
             fh.write("};\n")
+        # Palettes: index 0 is transparent, the rest are drawn literally. A clip
+        # with no palette of its own uses the caller's body colour, so its mood
+        # tinting still works.
+        for name, frames, pal, top, bot in clips:
+            if not pal:
+                continue
+            rgb = []
+            for c in pal[:16]:
+                c = (c or "").lstrip("#")
+                rgb.append(tuple(int(c[i:i+2], 16) for i in (0, 2, 4)) if len(c) == 6 else (0, 0, 0))
+            body = ",".join("{%d,%d,%d}" % v for v in rgb)
+            fh.write(f"static const unsigned char kPal_{name}[][3] = {{{body}}};\n")
+
         fh.write("\nstatic const ClawdClip kClawdClips[] = {\n")
-        for name, frames in clips:
-            fh.write(f'  {{"{name}", {len(frames)}, kF_{name}}},\n')
+        for name, frames, pal, top, bot in clips:
+            p = f"(const unsigned char (*)[3])kPal_{name}" if pal else "0"
+            n = len(pal[:16]) if pal else 0
+            fh.write(f'  {{"{name}", {len(frames)}, kF_{name}, {p}, {n}, {top}, {bot}}},\n')
         fh.write("};\n")
         fh.write(f"static const int kClawdClipCount = {len(clips)};\n")
 

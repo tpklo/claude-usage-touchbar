@@ -85,9 +85,12 @@ typedef NS_ENUM(NSInteger, Act) { ActWalk, ActClip, ActJuggle };
 // 0 breathe 1 blink 2 look_around 3 wink 4 surprise 5 sleep 6 bounce 7 sway 8 think
 static int ClipForMood(Mood m) {
     switch (m) {
-        case MoodCalm:  { int c[] = {0,1,2};   return c[arc4random_uniform(3)]; }
-        case MoodBrisk: { int c[] = {6,7,3};   return c[arc4random_uniform(3)]; }
-        case MoodTired: { int c[] = {8,5};     return c[arc4random_uniform(2)]; }
+        // Calm: idling, plus the laptop scene — nothing much is being spent.
+        case MoodCalm:  { int c[] = {0,1,2,9};       return c[arc4random_uniform(4)]; }
+        // Brisk: dancing, including the three DJ variants.
+        case MoodBrisk: { int c[] = {6,7,3,10,11,12}; return c[arc4random_uniform(6)]; }
+        // Tired: thinking hard, or asleep.
+        case MoodTired: { int c[] = {8,5,9};         return c[arc4random_uniform(3)]; }
         case MoodPanic: return 4;   // surprise
     }
 }
@@ -312,30 +315,55 @@ static const unsigned char *WalkFrame(const unsigned char *base, int step) {
 #define CLAWD_ROWS (CLAWD_BOT - CLAWD_TOP + 1)
 
 static void DrawGridLean(const unsigned char *g, NSPoint origin, CGFloat px,
-                         BOOL flip, NSColor *body, CGFloat lean);
+                         BOOL flip, NSColor *body, CGFloat lean,
+                         const unsigned char (*pal)[3], int palCount,
+                         int top, int bot);
 
-static void DrawGrid(const unsigned char *g, NSPoint origin, CGFloat px,
-                     BOOL flip, NSColor *body) {
-    DrawGridLean(g, origin, px, flip, body, 0);
+// A clip either carries its own palette (scenes with props — laptop, desk,
+// headphones) or is the plain 0/1/2 creature, in which case the caller's body
+// colour applies so mood tinting still reaches it.
+static void DrawGridPal(const unsigned char *g, NSPoint origin, CGFloat px,
+                        BOOL flip, NSColor *body,
+                        const unsigned char (*pal)[3], int palCount,
+                        int top, int bot) {
+    DrawGridLean(g, origin, px, flip, body, 0, pal, palCount, top, bot);
 }
 
 // lean shears the sprite: rows further from the feet shift further, so he
 // tilts against the direction he is being pulled instead of sliding rigid.
 static void DrawGridLean(const unsigned char *g, NSPoint origin, CGFloat px,
-                         BOOL flip, NSColor *body, CGFloat lean) {
+                         BOOL flip, NSColor *body, CGFloat lean,
+                         const unsigned char (*pal)[3], int palCount,
+                         int top, int bot) {
     NSColor *eye = [NSColor colorWithSRGBRed:0.06 green:0.06 blue:0.06 alpha:1.0];
-    for (int r = CLAWD_TOP; r <= CLAWD_BOT; r++) {
+    NSColor *cache[16] = {0};
+    for (int r = top; r <= bot; r++) {
         for (int c = 0; c < CLAWD_N; c++) {
             unsigned char v = g[r * CLAWD_N + c];
             if (!v) continue;
-            [(v == 2 ? eye : body) set];
+            NSColor *ink;
+            if (pal && v < palCount) {
+                if (!cache[v])
+                    cache[v] = [NSColor colorWithSRGBRed:pal[v][0] / 255.0
+                                                   green:pal[v][1] / 255.0
+                                                    blue:pal[v][2] / 255.0 alpha:1.0];
+                ink = cache[v];
+            } else {
+                ink = (v == 2) ? eye : body;
+            }
+            [ink set];
             int cx = flip ? (CLAWD_N - 1 - c) : c;
-            CGFloat rowUp = (CLAWD_BOT - r);          // 0 at the feet
+            CGFloat rowUp = (bot - r);                // 0 at the feet
             NSRectFill(NSMakeRect(origin.x + (cx - CLAWD_N / 2.0) * px + lean * rowUp,
                                   origin.y + rowUp * px,
                                   px + 0.4, px + 0.4));
         }
     }
+}
+
+static void DrawGrid(const unsigned char *g, NSPoint origin, CGFloat px,
+                     BOOL flip, NSColor *body) {
+    DrawGridPal(g, origin, px, flip, body, NULL, 0, CLAWD_TOP, CLAWD_BOT);
 }
 
 - (void)drawRect:(NSRect)dirty {
@@ -390,7 +418,7 @@ static void DrawGridLean(const unsigned char *g, NSPoint origin, CGFloat px,
         CGFloat lean = MAX(-0.35, MIN(0.35, -self.dragVX * 0.04));
         NSPoint p = NSMakePoint(feet.x + jx, feet.y + jy);
         DrawGridLean(WalkFrame(base, (int)(self.phase * 2.0)), p, px,
-                     (self.dir < 0), body, lean);
+                     (self.dir < 0), body, lean, NULL, 0, CLAWD_TOP, CLAWD_BOT);
 
         // Sweat: three drops on staggered cycles, each arcing up and out from
         // the head and fading. Position comes from the clock, so no particle
@@ -420,7 +448,18 @@ static void DrawGridLean(const unsigned char *g, NSPoint origin, CGFloat px,
     } else {
         const ClawdClip *cl = &kClawdClips[self.clipIdx];
         NSInteger i = MIN(MAX(self.clip, 0), (NSInteger)cl->count - 1);
-        DrawGrid(cl->frames[i].grid, feet, px, (self.dir < 0), body);
+        // Prop scenes must not be mirrored: a laptop drawn backwards reads as
+        // a glitch, unlike the creature itself which is symmetric enough.
+        // Clips carry their own row window. The prop scenes are taller than the
+        // creature alone, so shrink the pixel just enough to fit rather than
+        // cropping desks and thought bubbles off the top — which is what the
+        // fixed 3..17 window had been doing to every clip, old ones included.
+        int ctop = cl->top, cbot = cl->bot;
+        CGFloat cpx = MIN(px, (kSceneH - 1.0) / (cbot - ctop + 1));
+        NSPoint cfeet = NSMakePoint(self.x, midY - ((cbot - ctop + 1) * cpx) / 2.0);
+        DrawGridPal(cl->frames[i].grid, cfeet, cpx,
+                    cl->pal ? NO : (self.dir < 0), body, cl->pal, cl->palCount,
+                    ctop, cbot);
     }
 
     // Tired: a sweat drop above the head.
@@ -668,7 +707,8 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
         CGFloat jx = sin(t * 16.0) * 1.3 + sin(t * 6.0) * 0.6;
         CGFloat jy = sin(t * 13.0) * 1.5 + cos(t * 21.0) * 0.5;
         NSPoint p = NSMakePoint(cx + jx, 2 + jy);
-        DrawGridLean(WalkFrame(base, (int)(t * 34.0)), p, px, NO, body, 0.15);
+        DrawGridLean(WalkFrame(base, (int)(t * 34.0)), p, px, NO, body, 0.15, NULL, 0,
+                     CLAWD_TOP, CLAWD_BOT);
         CGFloat hy = p.y + CLAWD_ROWS * px;
 
         if (v == 0) {          // A: หยดเดียว ค้างข้างหัว ทรงหยดน้ำ สั่นตามตัว
@@ -942,8 +982,40 @@ static int RenderStates(NSString *dir) {
     return 0;
 }
 
+// `--poses <dir>`: one PNG per clip, mid-animation, so a new pose can be
+// checked for clipping and palette errors without waiting for it to appear.
+static int RenderPoses(NSString *dir) {
+    [NSFileManager.defaultManager createDirectoryAtPath:dir
+                            withIntermediateDirectories:YES attributes:nil error:nil];
+    for (int i = 0; i < kClawdClipCount; i++) {
+        const ClawdClip *cl = &kClawdClips[i];
+        PetView *v = [[PetView alloc] initWithFrame:NSMakeRect(0, 0, 120, kSceneH)];
+        v.p5 = 20; v.p7 = 10; v.state = @"ok"; v.haveData = YES;
+        v.x = 60; v.act = ActClip; v.clipIdx = i; v.clip = cl->count / 2;
+
+        NSImage *layer = [[NSImage alloc] initWithSize:v.bounds.size];
+        [layer lockFocus]; [v drawRect:v.bounds]; [layer unlockFocus];
+        NSImage *img = [[NSImage alloc] initWithSize:v.bounds.size];
+        [img lockFocus];
+        [NSColor.blackColor set]; NSRectFill(v.bounds);
+        [layer drawInRect:v.bounds fromRect:NSZeroRect
+                operation:NSCompositingOperationSourceOver fraction:1.0];
+        [img unlockFocus];
+        NSBitmapImageRep *out = [[NSBitmapImageRep alloc] initWithData:img.TIFFRepresentation];
+        [[out representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+            writeToFile:[dir stringByAppendingPathComponent:
+                         [NSString stringWithFormat:@"%02d-%s.png", i, cl->name]] atomically:YES];
+        printf("%2d %-20s %2d frames %s\n", i, cl->name, cl->count, cl->pal ? "(own palette)" : "");
+    }
+    return 0;
+}
+
 int main(int argc, const char **argv) {
     @autoreleasepool {
+        if (argc == 3 && strcmp(argv[1], "--poses") == 0) {
+            [NSApplication sharedApplication];
+            return RenderPoses(@(argv[2]));
+        }
         if (argc == 3 && strcmp(argv[1], "--render") == 0) {
             [NSApplication sharedApplication];   // AppKit drawing needs this
             return RenderStates(@(argv[2]));
