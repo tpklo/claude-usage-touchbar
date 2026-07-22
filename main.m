@@ -1016,6 +1016,42 @@ static int RenderStates(NSString *dir) {
     return 0;
 }
 
+// `--shot <out.png> <p5> <p7> <resetMin> <ageSec> [scopedPct scopedName]`:
+// one frame at exactly the numbers you ask for. `--render` covers the eight
+// states worth reviewing, but a press shot has to match a state that actually
+// happened — a photograph of the bar and a render beside it disagreeing on the
+// percentages is the kind of detail that makes both look fabricated.
+static int RenderShot(NSString *out, int p5, int p7, int resetMin, int ageSec,
+                      int scopedPct, NSString *scopedName) {
+    PetView *v = [[PetView alloc] initWithFrame:NSMakeRect(0, 0, kSceneW, kSceneH)];
+    v.p5 = p5; v.p7 = p7; v.resetMin = resetMin; v.ageSec = ageSec;
+    v.scopedPct = scopedPct; v.scopedName = scopedName;
+    v.state = @"ok"; v.haveData = YES; v.x = 60;
+
+    // Two passes, for the reason spelled out in RenderStates: drawRect: opens
+    // by clearing itself in copy mode, so the backdrop has to go on afterwards.
+    NSImage *layer = [[NSImage alloc] initWithSize:v.bounds.size];
+    [layer lockFocus];
+    [v drawRect:v.bounds];
+    [layer unlockFocus];
+
+    NSImage *img = [[NSImage alloc] initWithSize:v.bounds.size];
+    [img lockFocus];
+    [NSColor.blackColor set];
+    NSRectFill(v.bounds);
+    [layer drawInRect:v.bounds fromRect:NSZeroRect
+            operation:NSCompositingOperationSourceOver fraction:1.0];
+    [img unlockFocus];
+
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]
+        initWithData:[img TIFFRepresentation]];
+    [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+        writeToFile:out atomically:YES];
+    printf("%s (%.0fx%.0f)\n", out.UTF8String,
+           (double)rep.pixelsWide, (double)rep.pixelsHigh);
+    return 0;
+}
+
 // `--poses <dir>`: one PNG per clip, mid-animation, so a new pose can be
 // checked for clipping and palette errors without waiting for it to appear.
 // `--film <dir> <seconds>`: run the real animation loop headless and write one
@@ -1143,6 +1179,13 @@ int main(int argc, const char **argv) {
         if (argc == 3 && strcmp(argv[1], "--render") == 0) {
             [NSApplication sharedApplication];   // AppKit drawing needs this
             return RenderStates(@(argv[2]));
+        }
+        if ((argc == 7 || argc == 9) && strcmp(argv[1], "--shot") == 0) {
+            [NSApplication sharedApplication];
+            return RenderShot(@(argv[2]), atoi(argv[3]), atoi(argv[4]),
+                              atoi(argv[5]), atoi(argv[6]),
+                              argc == 9 ? atoi(argv[7]) : 0,
+                              argc == 9 ? @(argv[8]) : @"");
         }
         NSApplication *app = NSApplication.sharedApplication;
         AppDelegate *d = [AppDelegate new];
