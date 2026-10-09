@@ -930,12 +930,24 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
             out = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
         }
 
-        NSArray<NSString *> *parts = [[out ?: @""
+        // `bash -l` sources the user's login files, and anything they echo to
+        // stdout (a banner, an "rc loaded" line) lands ahead of the script's
+        // output. Splitting the whole blob shifted every field — the banner's
+        // words became 5h/7d, and "ok" turned up as a model name. The script
+        // prints exactly one line, last, so read only that.
+        NSString *line = [[[out ?: @""
             stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
-            componentsSeparatedByString:@" "];
+            componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet] lastObject];
+        NSArray<NSString *> *parts = [[line componentsSeparatedByCharactersInSet:
+            NSCharacterSet.whitespaceCharacterSet]
+            filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]];
+        // Still wrong-shaped (no trailing newline after the noise, a script that
+        // failed half-way): keep the last good reading rather than draw garbage.
+        BOOL valid = parts.count >= 5 &&
+            [@[@"ok", @"stale", @"expired", @"none"] containsObject:parts[4]];
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (parts.count >= 5) {
+            if (valid) {
                 self.pet.p5 = parts[0].intValue;
                 self.pet.p7 = parts[1].intValue;
                 self.pet.resetMin = parts[2].intValue;
