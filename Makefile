@@ -29,7 +29,7 @@ assets:
 # A real bundle is required, not a bare binary: TouchBarServer keys Control Strip
 # items off the caller's bundle identity, and a bare binary reports (null) — the
 # item silently never appears.
-$(BIN): main.m clawd_presets.h Info.plist
+$(BIN): main.m usage_parser.h clawd_presets.h Info.plist
 	mkdir -p $(BUNDLE)/Contents/MacOS
 	cp Info.plist $(BUNDLE)/Contents/Info.plist
 	clang $(FLAGS) -o $@ main.m
@@ -56,6 +56,7 @@ test:
 	@python3 tools/test-cache-security.py
 	@python3 tools/test-main-security.py
 	@python3 tools/test_assets.py
+	@python3 tools/test-usage-parser.py
 
 # The Touch Bar cannot be screenshotted, so this renders the readout at a spread
 # of states to PNGs instead. The only way to actually look at a layout change.

@@ -17,6 +17,7 @@
 #import <Cocoa/Cocoa.h>
 #import "clawd_presets.h"
 #import <string.h>
+#import "usage_parser.h"
 
 // Mood pools use indices 0...12. Refuse a stale/partial generated header at
 // build time instead of allowing an out-of-bounds read at runtime.
@@ -948,23 +949,23 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
             out = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
         }
 
-        NSArray<NSString *> *parts = [[out ?: @""
-            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
-            componentsSeparatedByString:@" "];
+        // Parse only a complete, validated protocol line. Keep the last good
+        // reading when shell noise, malformed numbers or truncated output
+        // leaves no usable record. The same C parser is exercised in tests.
+        NSData *outputData = [out dataUsingEncoding:NSUTF8StringEncoding];
+        UsageReading reading = {0};
+        BOOL valid = ParseUsageOutput(outputData.bytes, outputData.length, &reading);
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (parts.count >= 5) {
-                self.pet.p5 = parts[0].intValue;
-                self.pet.p7 = parts[1].intValue;
-                self.pet.resetMin = parts[2].intValue;
-                self.pet.ageSec = parts[3].intValue;
-                self.pet.state = parts[4];
-                // The API also reports a per-model weekly cap (kind=weekly_scoped).
-                // Only surface it once it is actually being consumed — at 0% it is
-                // noise on a 30pt strip.
-                self.pet.scopedPct  = (parts.count >= 6) ? parts[5].intValue : -1;
-                self.pet.scopedName = (parts.count >= 7) ? parts[6] : @"";
-                self.pet.haveData = ![parts[4] isEqualToString:@"none"];
+            if (valid) {
+                self.pet.p5 = reading.p5;
+                self.pet.p7 = reading.p7;
+                self.pet.resetMin = reading.resetMin;
+                self.pet.ageSec = reading.ageSec;
+                self.pet.state = [NSString stringWithUTF8String:reading.state];
+                self.pet.scopedPct = reading.scopedPct;
+                self.pet.scopedName = [NSString stringWithUTF8String:reading.scopedName];
+                self.pet.haveData = strcmp(reading.state, "none") != 0;
             }
             self.polling = NO;
         });

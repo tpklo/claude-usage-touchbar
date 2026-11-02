@@ -112,6 +112,22 @@ idle sleep. Frame updates pause while the screen is locked or the display is
 asleep; display wake alone does not clear the separate lock state. Clip
 selection also checks runtime bounds in addition to the compile-time guard.
 
+## Usage-reader output
+
+The GUI uses the same portable C parser exercised by the offline tests. It
+looks backwards through stdout for the newest valid protocol line, ignoring
+login banners and trailing diagnostics. It accepts 5-7 whitespace-separated
+fields (spaces or tabs), requires a known state, checks integer syntax and ranges before
+conversion, and limits model names to 64 ASCII letters/digits or `_.-`.
+Malformed output cannot partially update a reading: if no valid line exists,
+the previous reading is retained. Inputs over 64 KiB and embedded NUL bytes
+are rejected; individual protocol lines are limited to 512 bytes.
+
+This is validation, not authentication: arbitrary output that exactly matches
+the protocol cannot be distinguished from the reader's own line. The script
+and the user's login files remain trusted local code. The line-oriented fix
+was prompted by @xmihal03's report and PR #1.
+
 ## Private API
 
 The app calls `+[NSTouchBar presentSystemModalTouchBar:placement:systemTrayItemIdentifier:]`
