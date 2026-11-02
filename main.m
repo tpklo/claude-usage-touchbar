@@ -106,9 +106,9 @@ static int ClipForMood(Mood m, int previous) {
     }
     for (int tries = 0; tries < 8; tries++) {
         int pick = pool[arc4random_uniform(n)];
-        if (pick != previous) return pick;
+        if (pick != previous && pick >= 0 && pick < kClawdClipCount) return pick;
     }
-    return pool[0];
+    return pool[0] < kClawdClipCount ? pool[0] : 0;
 }
 
 @interface PetView : NSView
@@ -801,7 +801,7 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
 @property (nonatomic, strong) id activity;
 @property (nonatomic) NSTimeInterval lastFrame;
 @property (nonatomic) NSTimeInterval lastPoll;
-@property (nonatomic) BOOL polling, asleep;
+@property (nonatomic) BOOL polling, asleep, dark;
 @end
 
 @implementation AppDelegate
@@ -860,6 +860,14 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
         addObserver:self selector:@selector(sleep) name:@"com.apple.screenIsLocked" object:nil];
     [NSDistributedNotificationCenter.defaultCenter
         addObserver:self selector:@selector(wake) name:@"com.apple.screenIsUnlocked" object:nil];
+    // A display may sleep without locking. Keep these states independent so
+    // waking the display does not resume animation while the screen is locked.
+    [NSWorkspace.sharedWorkspace.notificationCenter
+        addObserver:self selector:@selector(screensSlept:)
+               name:NSWorkspaceScreensDidSleepNotification object:nil];
+    [NSWorkspace.sharedWorkspace.notificationCenter
+        addObserver:self selector:@selector(screensWoke:)
+               name:NSWorkspaceScreensDidWakeNotification object:nil];
 
     [self poll];
 }
@@ -870,6 +878,11 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
 
 - (void)sleep { self.asleep = YES; }
 - (void)wake  { self.asleep = NO; [self present]; }
+- (void)screensSlept:(NSNotification *)note { self.dark = YES; }
+- (void)screensWoke:(NSNotification *)note {
+    self.dark = NO;
+    self.lastFrame = NSDate.timeIntervalSinceReferenceDate;
+}
 
 - (nullable NSTouchBarItem *)touchBar:(NSTouchBar *)bar
                 makeItemForIdentifier:(NSTouchBarItemIdentifier)identifier {
@@ -904,7 +917,7 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
 }
 
 - (void)frame {
-    if (self.asleep) return;
+    if (self.asleep || self.dark) return;
 
     NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
     NSTimeInterval dt = MIN(now - self.lastFrame, 0.25);   // clamp after a stall

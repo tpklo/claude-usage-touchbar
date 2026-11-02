@@ -108,7 +108,9 @@ all validation succeeds. The native build also rejects partial clip tables.
 These checks do not grant a licence to redistribute the artwork.
 
 The activity assertion keeps animation responsive without disabling macOS
-idle sleep.
+idle sleep. Frame updates pause while the screen is locked or the display is
+asleep; display wake alone does not clear the separate lock state. Clip
+selection also checks runtime bounds in addition to the compile-time guard.
 
 ## Private API
 
