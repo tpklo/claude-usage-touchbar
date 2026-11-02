@@ -80,8 +80,8 @@ this page.
 
 ## What is cached
 
-`/tmp/.claude-usage-$UID`, mode `0600`, containing six whitespace-separated
-values:
+`~/.claude-usage-touchbar/usage`, mode `0600`, in a private `0700`
+directory, containing six whitespace-separated values:
 
 ```
 <5h%> <7d%> <resetMinutes> <scopedPct> <scopedName> <unixTimestamp>
@@ -89,6 +89,26 @@ values:
 
 Percentages and a timestamp. No token, no identifier, nothing about you.
 Delete it whenever you like; it is rebuilt within a minute.
+
+The old shared `/tmp/.claude-usage-$UID` file is never read or migrated.
+Cache paths are opened relative to verified directory descriptors, without
+following symlinks. The home and cache directories must belong to the current
+user and must not be writable by other users. Cache records are size-limited,
+validated and normalized before any value reaches shell arithmetic. Writes
+use a new private file and an atomic rename, not truncation of an existing path.
+
+## Build-time assets
+
+Pose downloads are untrusted input, not executable code. The asset extractor
+checks SHA-256 pins and parses only a restricted data-expression grammar with
+locally implemented grid operations; it never evaluates JavaScript. It fails
+closed on unsupported source syntax or invalid data, requires the
+complete ordered set of 13 clips, and replaces the generated header only after
+all validation succeeds. The native build also rejects partial clip tables.
+These checks do not grant a licence to redistribute the artwork.
+
+The activity assertion keeps animation responsive without disabling macOS
+idle sleep.
 
 ## Private API
 
@@ -134,3 +154,4 @@ please open an issue.
 Open a GitHub issue. This is a personal project maintained on a best-effort
 basis — if you need a guaranteed response window, this is not the right
 dependency for you.
+

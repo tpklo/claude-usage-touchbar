@@ -57,10 +57,8 @@ See [SECURITY.md](SECURITY.md) for exactly where the token goes.
 - macOS 12+ — developed and tested on macOS 26.4
 - Xcode Command Line Tools: `xcode-select --install`
 - Claude Code, signed in (`claude` in a terminal)
-- Node, **for the build only**: `brew install node`. It runs the pose data
-  through its own engine once, at `make assets` time. Neither the widget nor
-  the usage script uses it afterwards — those need nothing beyond what the
-  Command Line Tools already installed.
+- Python 3 (included with the Command Line Tools). No Node dependency.
+
 
 ## Install
 
@@ -93,7 +91,20 @@ library at [claudepix.vercel.app](https://claudepix.vercel.app) publishes no
 licence, which means all rights reserved.
 
 So the pose data is not redistributed here. `make assets` fetches the pose
-grids at build time and writes them to `clawd_presets.h` on your machine.
+grids at build time and writes them to `clawd_presets.h` on your machine. Each
+source is checked against `tools/assets-sha256.json`, then a restricted Python
+parser reads its data declarations. **No downloaded JavaScript is executed.**
+All 13 clips, frame dimensions, durations and palette indices must validate
+before the complete header atomically replaces the previous one. A changed
+upstream page fails closed; the previous header stays untouched.
+
+Maintainers updating the hash manifest must download the changed source as
+text, review its data and helper semantics against `tools/extract-assets.py`,
+adapt the parser if needed, and run `python3 tools/test_assets.py` plus a local
+`make assets` and build. Do not automatically accept new hashes or add an eval
+fallback. The current pins were obtained from the 14 source files on
+2026-11-02; only hashes, not the unlicensed artwork, are checked in.
+
 Nothing you can build a pose library from is in this repository — the demo
 recording at the top is a screenshot of the running widget, the same as any
 project showing its own UI.
@@ -181,3 +192,4 @@ Not affiliated with or endorsed by Anthropic.
 
 MIT, covering the code in this repository only. It does not extend to Clawd,
 to Anthropic's artwork, or to the pose data — none of which is included here.
+

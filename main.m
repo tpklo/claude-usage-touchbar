@@ -18,6 +18,11 @@
 #import "clawd_presets.h"
 #import <string.h>
 
+// Mood pools use indices 0...12. Refuse a stale/partial generated header at
+// build time instead of allowing an out-of-bounds read at runtime.
+_Static_assert(sizeof(kClawdClips) / sizeof(kClawdClips[0]) == 13,
+               "Expected all 13 Clawd clips; regenerate with make assets");
+
 extern void DFRSystemModalShowsCloseBoxWhenFrontMost(BOOL show);
 
 @interface NSTouchBar (PrivateSPI)
@@ -834,8 +839,8 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
     [self present];
 
     // App Nap will freeze the animation the moment you switch away, which is
-    // precisely when the pet is worth watching.
-    self.activity = [NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiated
+    // precisely when the pet is worth watching. Do not prevent idle sleep.
+    self.activity = [NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep
                                                                  reason:@"animate the Touch Bar pet"];
 
     self.lastFrame = NSDate.timeIntervalSinceReferenceDate;
@@ -1197,3 +1202,4 @@ int main(int argc, const char **argv) {
     }
     return 0;
 }
+

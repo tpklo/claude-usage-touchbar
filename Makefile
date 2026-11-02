@@ -53,6 +53,9 @@ missing-assets:
 # No network, no keychain, no artwork needed — this is what CI runs.
 test:
 	@./tools/test.sh
+	@python3 tools/test-cache-security.py
+	@python3 tools/test-main-security.py
+	@python3 tools/test_assets.py
 
 # The Touch Bar cannot be screenshotted, so this renders the readout at a spread
 # of states to PNGs instead. The only way to actually look at a layout change.
@@ -133,3 +136,4 @@ stop:
 
 clean: stop
 	rm -rf $(BUNDLE)
+
