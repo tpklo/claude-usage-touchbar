@@ -15,7 +15,9 @@
 # or a log — and is unset immediately after.
 set -uo pipefail
 
-CACHE=/tmp/.claude-usage-$UID          # "5h 7d resetMin scopedPct scopedName epoch"
+umask 077
+# Never read the legacy shared /tmp cache. Keep usage data in a private
+# directory directly under the current user's home.
 TTL=60
 
 # /usr/bin/python3 ships with the Command Line Tools, which this project already
@@ -25,10 +27,81 @@ PY=/usr/bin/python3
 [ -x "$PY" ] || PY=$(command -v python3) || {
   echo "0 0 -1 -1 none"; exit 0; }
 
+# Open paths relative to verified directory descriptors. O_NOFOLLOW rejects
+# symlinks; O_NONBLOCK prevents a planted FIFO from hanging the poller. This
+# helper also normalizes *every* number before Bash can use it in arithmetic.
+cache_io() {
+  "$PY" - "$1" "${2:-}" <<'PY_CACHE'
+import os, re, stat, sys, time, uuid
+
+def record(text):
+    fields = text.split()
+    if len(fields) != 6:
+        raise ValueError("invalid field count")
+    values = []
+    for value, low, high in zip(fields[:4], [-1, -1, -1, -1], [100, 100, 525600, 100]):
+        if not re.fullmatch(r"-?[0-9]{1,10}", value):
+            raise ValueError("invalid number")
+        value = int(value, 10)
+        if not low <= value <= high:
+            raise ValueError("number out of range")
+        values.append(str(value))
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", fields[4]):
+        raise ValueError("invalid model name")
+    if not re.fullmatch(r"[0-9]{1,10}", fields[5]):
+        raise ValueError("invalid timestamp")
+    stamp = int(fields[5], 10)
+    if not 0 < stamp <= int(time.time()) + 5:
+        raise ValueError("timestamp out of range")
+    return " ".join(values + [fields[4], str(stamp)])
+
+try:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    home = os.open(os.path.expanduser("~"), flags)
+    info = os.fstat(home)
+    if info.st_uid != os.getuid() or info.st_mode & 0o022:
+        raise ValueError("unsafe home directory")
+    try:
+        os.mkdir(".claude-usage-touchbar", 0o700, dir_fd=home)
+    except FileExistsError:
+        pass
+    directory = os.open(".claude-usage-touchbar", flags, dir_fd=home)
+    info = os.fstat(directory)
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("unsafe cache directory")
+    if sys.argv[1] == "read":
+        fd = os.open("usage", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+                or info.st_size > 1024):
+            raise ValueError("unsafe cache file")
+        with os.fdopen(fd) as stream:
+            result = record(stream.read(1025))
+    else:
+        result = record(sys.argv[2])
+        name = ".usage-" + uuid.uuid4().hex
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                stream.write(result + "\n")
+            os.replace(name, "usage", src_dir_fd=directory, dst_dir_fd=directory)
+        finally:
+            try:
+                os.unlink(name, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+    print(result)
+except (OSError, ValueError, UnicodeError):
+    sys.exit(1)
+PY_CACHE
+}
+
 read_cache() {                          # -> P5 P7 RESET SP SN STAMP
-  [ -f "$CACHE" ] || return 1
-  read -r P5 P7 RESET SP SN STAMP < "$CACHE" 2>/dev/null || :
-  [ -n "${P5:-}" ]
+  local validated
+  validated=$(cache_io read) || return 1
+  read -r P5 P7 RESET SP SN STAMP <<< "$validated"
 }
 
 P5=; P7=; RESET=-1; SP=-1; SN=-; STAMP=0
@@ -88,7 +161,7 @@ for l in j.get("limits") or []:
     elif k == "weekly_scoped":
         sp = round(v)
         nm = ((l.get("scope") or {}).get("model") or {}).get("display_name")
-        if nm: sn = re.sub(r"\s+", "", nm)
+        if isinstance(nm, str): sn = re.sub(r"[^A-Za-z0-9_.-]", "", nm)[:64] or "-"
 
 m = -1
 t = (j.get("five_hour") or {}).get("resets_at")
@@ -103,8 +176,12 @@ if t:
 print(f"{p5} {p7} {m} {sp} {sn}")')
       case "$parsed" in
         ''|-1\ -1\ *) state=stale ;;
-        *) printf '%s %s\n' "$parsed" "$(date +%s)" > "$CACHE"; chmod 600 "$CACHE"
-           read_cache || :; AGE=0; state=ok ;;
+        *) if validated=$(cache_io write "$parsed $(date +%s)"); then
+             read -r P5 P7 RESET SP SN STAMP <<< "$validated"
+             AGE=0; state=ok
+           else
+             state=stale
+           fi ;;
       esac
     else
       state=stale                       # network/5xx — keep the last good numbers
@@ -131,3 +208,4 @@ case "${1:-}" in
                 printf '   reset %dh%02d\n' $((RESET/60)) $((RESET%60)) ;;
      esac ;;
 esac
+

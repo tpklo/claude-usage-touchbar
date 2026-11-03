@@ -17,6 +17,12 @@
 #import <Cocoa/Cocoa.h>
 #import "clawd_presets.h"
 #import <string.h>
+#import "usage_parser.h"
+
+// Mood pools use indices 0...12. Refuse a stale/partial generated header at
+// build time instead of allowing an out-of-bounds read at runtime.
+_Static_assert(sizeof(kClawdClips) / sizeof(kClawdClips[0]) == 13,
+               "Expected all 13 Clawd clips; regenerate with make assets");
 
 extern void DFRSystemModalShowsCloseBoxWhenFrontMost(BOOL show);
 
@@ -101,9 +107,9 @@ static int ClipForMood(Mood m, int previous) {
     }
     for (int tries = 0; tries < 8; tries++) {
         int pick = pool[arc4random_uniform(n)];
-        if (pick != previous) return pick;
+        if (pick != previous && pick >= 0 && pick < kClawdClipCount) return pick;
     }
-    return pool[0];
+    return pool[0] < kClawdClipCount ? pool[0] : 0;
 }
 
 @interface PetView : NSView
@@ -796,7 +802,7 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
 @property (nonatomic, strong) id activity;
 @property (nonatomic) NSTimeInterval lastFrame;
 @property (nonatomic) NSTimeInterval lastPoll;
-@property (nonatomic) BOOL polling, asleep;
+@property (nonatomic) BOOL polling, asleep, dark;
 @end
 
 @implementation AppDelegate
@@ -834,8 +840,8 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
     [self present];
 
     // App Nap will freeze the animation the moment you switch away, which is
-    // precisely when the pet is worth watching.
-    self.activity = [NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiated
+    // precisely when the pet is worth watching. Do not prevent idle sleep.
+    self.activity = [NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep
                                                                  reason:@"animate the Touch Bar pet"];
 
     self.lastFrame = NSDate.timeIntervalSinceReferenceDate;
@@ -855,6 +861,14 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
         addObserver:self selector:@selector(sleep) name:@"com.apple.screenIsLocked" object:nil];
     [NSDistributedNotificationCenter.defaultCenter
         addObserver:self selector:@selector(wake) name:@"com.apple.screenIsUnlocked" object:nil];
+    // A display may sleep without locking. Keep these states independent so
+    // waking the display does not resume animation while the screen is locked.
+    [NSWorkspace.sharedWorkspace.notificationCenter
+        addObserver:self selector:@selector(screensSlept:)
+               name:NSWorkspaceScreensDidSleepNotification object:nil];
+    [NSWorkspace.sharedWorkspace.notificationCenter
+        addObserver:self selector:@selector(screensWoke:)
+               name:NSWorkspaceScreensDidWakeNotification object:nil];
 
     [self poll];
 }
@@ -865,6 +879,11 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
 
 - (void)sleep { self.asleep = YES; }
 - (void)wake  { self.asleep = NO; [self present]; }
+- (void)screensSlept:(NSNotification *)note { self.dark = YES; }
+- (void)screensWoke:(NSNotification *)note {
+    self.dark = NO;
+    self.lastFrame = NSDate.timeIntervalSinceReferenceDate;
+}
 
 - (nullable NSTouchBarItem *)touchBar:(NSTouchBar *)bar
                 makeItemForIdentifier:(NSTouchBarItemIdentifier)identifier {
@@ -899,7 +918,7 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
 }
 
 - (void)frame {
-    if (self.asleep) return;
+    if (self.asleep || self.dark) return;
 
     NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
     NSTimeInterval dt = MIN(now - self.lastFrame, 0.25);   // clamp after a stall
@@ -930,23 +949,23 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
             out = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
         }
 
-        NSArray<NSString *> *parts = [[out ?: @""
-            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
-            componentsSeparatedByString:@" "];
+        // Parse only a complete, validated protocol line. Keep the last good
+        // reading when shell noise, malformed numbers or truncated output
+        // leaves no usable record. The same C parser is exercised in tests.
+        NSData *outputData = [out dataUsingEncoding:NSUTF8StringEncoding];
+        UsageReading reading = {0};
+        BOOL valid = ParseUsageOutput(outputData.bytes, outputData.length, &reading);
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (parts.count >= 5) {
-                self.pet.p5 = parts[0].intValue;
-                self.pet.p7 = parts[1].intValue;
-                self.pet.resetMin = parts[2].intValue;
-                self.pet.ageSec = parts[3].intValue;
-                self.pet.state = parts[4];
-                // The API also reports a per-model weekly cap (kind=weekly_scoped).
-                // Only surface it once it is actually being consumed — at 0% it is
-                // noise on a 30pt strip.
-                self.pet.scopedPct  = (parts.count >= 6) ? parts[5].intValue : -1;
-                self.pet.scopedName = (parts.count >= 7) ? parts[6] : @"";
-                self.pet.haveData = ![parts[4] isEqualToString:@"none"];
+            if (valid) {
+                self.pet.p5 = reading.p5;
+                self.pet.p7 = reading.p7;
+                self.pet.resetMin = reading.resetMin;
+                self.pet.ageSec = reading.ageSec;
+                self.pet.state = [NSString stringWithUTF8String:reading.state];
+                self.pet.scopedPct = reading.scopedPct;
+                self.pet.scopedName = [NSString stringWithUTF8String:reading.scopedName];
+                self.pet.haveData = strcmp(reading.state, "none") != 0;
             }
             self.polling = NO;
         });
@@ -1197,3 +1216,4 @@ int main(int argc, const char **argv) {
     }
     return 0;
 }
+
